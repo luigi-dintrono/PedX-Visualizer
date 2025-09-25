@@ -1,36 +1,128 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# PedX Visualizer
 
-## Getting Started
+A minimal Next.js application with CesiumJS integration for 3D globe visualization and data analysis.
 
-First, run the development server:
+## Features
+
+- **CesiumJS Integration**: Full-screen 3D globe with static asset optimization
+- **shadcn/ui Components**: Modern UI with floating sidebars
+- **TypeScript**: Full type safety
+- **Tailwind CSS**: Utility-first styling
+- **Responsive Design**: Optimized for desktop and mobile
+
+## Quick Start
+
+```bash
+# Clone and setup
+git clone <your-repo>
+cd pedx-visualizer
+npm install
+npm run setup
+npm run dev
+```
+
+## Setup
+
+### 1. Install Dependencies
+
+```bash
+npm install
+```
+
+This will automatically run the postinstall script to copy Cesium assets to `/public/cesium`.
+
+### 2. Setup Environment Variables
+
+**Option A: Interactive Setup (Recommended)**
+```bash
+npm run setup
+```
+This will:
+- Copy `env.example` to `.env.local`
+- Prompt you to enter your Cesium Ion token
+- Guide you through getting a token if needed
+
+**Option B: Manual Setup**
+```bash
+npm run copy-env
+```
+Then manually edit `.env.local` and add your Cesium Ion token.
+
+**Getting a Cesium Ion Token:**
+1. Visit [https://ion.cesium.com/](https://ion.cesium.com/)
+2. Sign up for a free account
+3. Create a new token
+4. Copy the token when prompted by the setup script
+
+### 3. Run the Development Server
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000) to view the application.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Project Structure
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```
+pedx-visualizer/
+├── src/
+│   ├── app/
+│   │   ├── page.tsx          # Main page with sidebars over globe
+│   │   └── globals.css       # Global styles
+│   ├── components/
+│   │   ├── Globe.tsx         # Cesium globe component
+│   │   └── ui/               # shadcn/ui components
+│   └── lib/
+│       └── utils.ts          # Utility functions
+├── public/
+│   └── cesium/               # Cesium static assets (auto-generated)
+├── scripts/
+│   └── copy-cesium-assets.js # Postinstall script
+├── next.config.mjs           # Next.js configuration for Cesium
+└── package.json             # Dependencies and scripts
+```
 
-## Learn More
+## Architecture
 
-To learn more about Next.js, take a look at the following resources:
+- **Globe Component**: Client-side Cesium integration with proper cleanup
+- **Sidebars**: Floating UI panels for filters and information
+- **Static Assets**: Cesium assets served from `/public/cesium`
+- **Webpack Configuration**: Automatic copying of Cesium Workers
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Future Enhancements
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+This project is designed to be extended with:
 
-## Deploy on Vercel
+- **Database Integration**: Add APIs and database connections
+- **Real-time Data**: Connect to live data sources
+- **Advanced Visualizations**: Add more data visualization components
+- **User Authentication**: Add user management
+- **Data Export**: Implement data export functionality
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Development Notes
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- The Cesium globe is configured with `requestRenderMode=true` for better performance
+- Static assets are automatically copied during `npm install`
+- The project uses Next.js App Router with TypeScript
+- All UI components are from shadcn/ui for consistency
+
+## Troubleshooting
+
+If you encounter issues:
+
+1. **Cesium not loading**: 
+   - Check that your `NEXT_PUBLIC_CESIUM_ION_TOKEN` is set correctly in `.env.local`
+   - Verify the token is valid at [https://ion.cesium.com/](https://ion.cesium.com/)
+
+2. **Assets not found**: 
+   - Run `npm install` again to trigger the postinstall script
+   - Check that `/public/cesium` directory exists with assets
+
+3. **Build errors**: 
+   - Ensure all dependencies are installed with `npm install`
+   - Check that `.env.local` exists (run `npm run copy-env` if missing)
+
+4. **Environment setup issues**:
+   - Run `npm run setup` for interactive setup
+   - Or manually copy `env.example` to `.env.local` and edit it
