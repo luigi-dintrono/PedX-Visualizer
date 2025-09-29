@@ -12,6 +12,9 @@ A minimal Next.js application with CesiumJS integration for 3D globe visualizati
 - **Tailwind CSS**: Utility-first styling
 - **Responsive Design**: Optimized for desktop and mobile
 
+<img width="2358" height="1380" alt="Screenshot 2025-09-29 at 12 55 03" src="https://github.com/user-attachments/assets/e3adc7b2-3473-48e2-8d3e-ddbaad8fe72a" />
+
+
 ## Quick Start
 
 ```bash
