@@ -16,7 +16,12 @@ export default function Globe() {
 
   useEffect(() => {
     const initCesium = async () => {
-      if (!cesiumContainer.current) return;
+      // Wait for the container to be available
+      if (!cesiumContainer.current) {
+        console.warn('Cesium container not ready, retrying...');
+        setTimeout(initCesium, 100);
+        return;
+      }
 
       // Set Cesium base URL before importing
       window.CESIUM_BASE_URL = '/cesium/';
@@ -53,10 +58,24 @@ export default function Globe() {
       }
     };
 
-    initCesium().catch(console.error);
+    // Add a small delay to ensure DOM is ready
+    const timeoutId = setTimeout(() => {
+      initCesium().catch(console.error);
+    }, 100);
+
+    // Handle window resize to ensure Cesium resizes properly
+    const handleResize = () => {
+      if (viewerRef.current) {
+        viewerRef.current.resize();
+      }
+    };
+
+    window.addEventListener('resize', handleResize);
 
     // Cleanup function
     return () => {
+      clearTimeout(timeoutId);
+      window.removeEventListener('resize', handleResize);
       if (viewerRef.current) {
         viewerRef.current.destroy();
         viewerRef.current = null;
@@ -68,7 +87,7 @@ export default function Globe() {
     <div
       ref={cesiumContainer}
       className="w-full h-full"
-      style={{ width: '100%', height: '100vh' }}
+      style={{ width: '100%', height: '100%' }}
     />
   );
 }
