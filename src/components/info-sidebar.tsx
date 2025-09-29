@@ -38,7 +38,7 @@ const infoItems = [
 
 export function InfoSidebar() {
   return (
-    <Sidebar variant="floating" collapsible="icon" side="right">
+    <Sidebar variant="sidebar" collapsible="offcanvas" side="right">
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupLabel>Information</SidebarGroupLabel>

@@ -42,7 +42,7 @@ const items = [
 
 export function FilterSidebar() {
   return (
-    <Sidebar variant="floating" collapsible="icon">
+    <Sidebar variant="sidebar" collapsible="offcanvas">
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupLabel>Filters</SidebarGroupLabel>
