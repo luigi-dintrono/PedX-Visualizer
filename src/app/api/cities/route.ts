@@ -10,7 +10,7 @@ export async function GET(request: NextRequest) {
     const limit = parseInt(searchParams.get('limit') || '50');
 
     let query = `
-      SELECT * FROM CityInsight
+      SELECT * FROM v_city_summary
       WHERE 1=1
     `;
     const params: any[] = [];

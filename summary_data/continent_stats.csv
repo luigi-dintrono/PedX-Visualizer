@@ -1,0 +1,4 @@
+continent,run_red_light_rate(%),risky_crossing_rate(%)
+Europe,8.928571428571429,25.0
+North America,5.0,25.0
+Oceania,0.0,0.0

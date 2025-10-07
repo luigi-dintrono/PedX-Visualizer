@@ -1,0 +1,5 @@
+clothing_type,risky_crossing_rate(%),run_red_light_rate(%)
+shirt,25.0,8.333333333333332
+outerwear,25.0,16.666666666666664
+shorts,16.666666666666664,0.0
+trousers,25.71428571428571,5.714285714285714

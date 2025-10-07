@@ -10,7 +10,10 @@
     "postinstall": "node scripts/copy-cesium-assets.js",
     "setup": "node scripts/setup-env.js",
     "copy-env": "node scripts/copy-env.js",
-    "setup-db": "node scripts/setup-database.js"
+    "setup-db": "node scripts/setup-database.js",
+    "aggregate-csv": "node scripts/aggregate-csv-data.js",
+    "aggregate-csv-fresh": "node scripts/aggregate-csv-data.js --fresh",
+    "aggregate-csv-verbose": "node scripts/aggregate-csv-data.js --verbose"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.12",
@@ -30,6 +33,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
+    "csv-parser": "^3.0.0",
     "dotenv": "^17.2.2",
     "lucide-react": "^0.544.0",
     "next": "15.5.4",

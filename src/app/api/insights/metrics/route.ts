@@ -4,29 +4,28 @@ import { MetricInsight } from '@/types/database';
 
 export async function GET(request: NextRequest) {
   try {
-    const { searchParams } = new URL(request.url);
-    const metricType = searchParams.get('type'); // e.g., 'crossing_speed', 'time_to_start', etc.
-
-    let query = `
-      SELECT * FROM MetricInsight
-      WHERE 1=1
-    `;
-    const params: any[] = [];
-    let paramCount = 0;
-
-    if (metricType) {
-      query += ` AND metric_type = $${++paramCount}`;
-      params.push(metricType);
-    }
-
-    query += ` ORDER BY id`;
-
-    const result = await pool.query(query, params);
+    // For now, return mock metric data to test the frontend
+    const mockMetrics: MetricInsight[] = [
+      {
+        id: 1,
+        metric_type: 'crossing_speed',
+        description: 'Average crossing speed across cities',
+        top_city: 'Monaco',
+        top_city_country: 'Monaco',
+        top_city_value: 2.73,
+        last_city: 'Sydney',
+        last_city_country: 'Australia',
+        last_city_value: 0.98,
+        global_avg: 1.86,
+        global_median: 1.86,
+        insight: 'Crossing speed varies significantly between cities, with Monaco showing faster pedestrian movement patterns.'
+      }
+    ];
     
     return NextResponse.json({
       success: true,
-      data: result.rows as MetricInsight[],
-      count: result.rows.length
+      data: mockMetrics,
+      count: mockMetrics.length
     });
   } catch (error) {
     console.error('Error fetching metric insights:', error);
