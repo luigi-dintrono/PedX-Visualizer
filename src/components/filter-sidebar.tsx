@@ -11,7 +11,15 @@ import {
   User, 
   Shirt,
   Car,
-  Search
+  Search,
+  Activity,
+  AlertTriangle,
+  Zap,
+  Shield,
+  Smartphone,
+  Gauge,
+  Clock,
+  Move
 } from "lucide-react"
 import { useState } from "react"
 
@@ -42,76 +50,96 @@ import {
 } from "@/components/ui/command"
 import { useFilter } from "@/contexts/FilterContext"
 
+// Behavior metrics configuration
+const BEHAVIOR_METRICS = [
+  {
+    value: 'risky_crossing',
+    label: 'Risky Crossing Rate',
+    description: 'Pedestrians crossing unsafely',
+    icon: AlertTriangle,
+  },
+  {
+    value: 'run_red_light',
+    label: 'Run Red Light Rate',
+    description: 'Ignoring traffic signals',
+    icon: Zap,
+  },
+  {
+    value: 'crosswalk_usage',
+    label: 'Crosswalk Usage Rate',
+    description: 'Using designated crossings',
+    icon: Shield,
+  },
+  {
+    value: 'phone_usage',
+    label: 'Phone Usage Rate',
+    description: 'Distracted by phones',
+    icon: Smartphone,
+  },
+  {
+    value: 'crossing_speed',
+    label: 'Crossing Speed',
+    description: 'Average speed while crossing',
+    icon: Gauge,
+  },
+  {
+    value: 'crossing_time',
+    label: 'Crossing Time',
+    description: 'Duration of crossing',
+    icon: Clock,
+  },
+  {
+    value: 'avg_age',
+    label: 'Average Age',
+    description: 'Demographics of pedestrians',
+    icon: User,
+  },
+  {
+    value: 'pedestrian_density',
+    label: 'Pedestrian Density',
+    description: 'Crowding effects',
+    icon: Users,
+  },
+  {
+    value: 'road_width',
+    label: 'Road Width',
+    description: 'Infrastructure impact',
+    icon: Move,
+  },
+] as const;
+
 export function FilterSidebar() {
   const {
     selectedCity,
     selectedMetrics,
+    granularFilters,
     cityData,
     metricData,
     loading,
     setSelectedCity,
     setSelectedMetrics,
+    updateGranularFilter,
+    resetGranularFilters,
     applyFilters,
   } = useFilter()
 
   // State for city search dropdown
   const [citySearchOpen, setCitySearchOpen] = useState(false)
+  const [behaviorSearchOpen, setBehaviorSearchOpen] = useState(false)
 
-  // Filter states
-  const [filters, setFilters] = useState({
-    // City Context
-    continents: [] as string[],
-    countries: [] as string[],
-    population: [0, 50000000] as [number, number],
-    trafficMortality: [0, 20] as [number, number],
-    medianAge: [0, 80] as [number, number],
-    giniIndex: [0, 100] as [number, number],
-    
-    // Environmental Context
-    weather: [] as string[],
-    daytime: null as boolean | null,
-    crosswalkPresent: null as boolean | null,
-    sidewalkPresent: null as boolean | null,
-    avgRoadWidth: [0, 50] as [number, number],
-    trafficSignsDensity: [0, 1] as [number, number],
-    potholes: null as boolean | null,
-    cracks: null as boolean | null,
-    policeCar: null as boolean | null,
-    cones: null as boolean | null,
-    accident: null as boolean | null,
-    
-    // Pedestrian Behavior
-    riskyCrossing: null as boolean | null,
-    runRedLight: null as boolean | null,
-    crosswalkUse: null as boolean | null,
-    nearbyPedestrians: [0, 20] as [number, number],
-    crossingSpeed: [0, 5] as [number, number],
-    timeToStart: [0, 30] as [number, number],
-    
-    // Demographics
-    gender: [] as string[],
-    ageRange: [0, 100] as [number, number],
-    literacyRate: [0, 100] as [number, number],
-    avgHeight: [140, 200] as [number, number],
-    
-    // Clothing & Accessories
-    phoneUse: null as boolean | null,
-    backpack: null as boolean | null,
-    umbrella: null as boolean | null,
-    handbag: null as boolean | null,
-    suitcase: null as boolean | null,
-    shirtType: [] as string[],
-    bottomWear: [] as string[],
-    dressType: [] as string[],
-    
-    // Vehicles
-    vehiclePresence: null as boolean | null,
-    car: [0, 1000] as [number, number],
-    bus: [0, 100] as [number, number],
-    truck: [0, 100] as [number, number],
-    motorbike: [0, 200] as [number, number],
-    bicycle: [0, 300] as [number, number],
-  })
+  // Alias for easier access
+  const filters = granularFilters
+
+  // Legacy setFilters wrapper - updates context instead
+  const setFilters = (updater: any) => {
+    if (typeof updater === 'function') {
+      const newFilters = updater(granularFilters)
+      Object.entries(newFilters).forEach(([key, value]) => {
+        updateGranularFilter(key as keyof typeof granularFilters, value)
+      })
+    }
+  }
+
 
   // Get unique cities from the data
   const uniqueCities = Array.from(new Set(cityData.map(city => city.city))).sort()
@@ -120,67 +148,35 @@ export function FilterSidebar() {
     const newSelectedCity = cityName === "all" ? null : cityName
     setSelectedCity(newSelectedCity)
     setCitySearchOpen(false)
+    
+    // If "All Cities" is selected, reset globe to original position
+    if (cityName === "all") {
+      // Trigger a globe reset event - this will be handled by the Globe component
+      window.dispatchEvent(new CustomEvent('resetGlobe'))
+    }
     // applyFilters will be called automatically by the useEffect in FilterContext
   }
 
+  const handleBehaviorSelect = (behavior: string) => {
+    const newSelectedBehavior = behavior === "all" ? [] : [behavior]
+    setSelectedMetrics(newSelectedBehavior)
+    setBehaviorSearchOpen(false)
+  }
+
   const updateFilter = (key: string, value: any) => {
-    setFilters(prev => ({ ...prev, [key]: value }))
+    updateGranularFilter(key as keyof typeof granularFilters, value)
   }
 
   const toggleArrayFilter = (key: string, value: string) => {
-    setFilters(prev => {
-      const current = prev[key as keyof typeof prev] as string[]
-      const newArray = current.includes(value) 
-        ? current.filter(item => item !== value)
-        : [...current, value]
-      return { ...prev, [key]: newArray }
-    })
+    const current = granularFilters[key as keyof typeof granularFilters] as string[]
+    const newArray = current.includes(value) 
+      ? current.filter(item => item !== value)
+      : [...current, value]
+    updateGranularFilter(key as keyof typeof granularFilters, newArray)
   }
 
   const resetFilters = () => {
-    setFilters({
-      continents: [],
-      countries: [],
-      population: [0, 50000000],
-      trafficMortality: [0, 20],
-      medianAge: [0, 80],
-      giniIndex: [0, 100],
-      weather: [],
-      daytime: null,
-      crosswalkPresent: null,
-      sidewalkPresent: null,
-      avgRoadWidth: [0, 50],
-      trafficSignsDensity: [0, 1],
-      potholes: null,
-      cracks: null,
-      policeCar: null,
-      cones: null,
-      accident: null,
-      riskyCrossing: null,
-      runRedLight: null,
-      crosswalkUse: null,
-      nearbyPedestrians: [0, 20],
-      crossingSpeed: [0, 5],
-      timeToStart: [0, 30],
-      gender: [],
-      ageRange: [0, 100],
-      literacyRate: [0, 100],
-      avgHeight: [140, 200],
-      phoneUse: null,
-      backpack: null,
-      umbrella: null,
-      handbag: null,
-      suitcase: null,
-      shirtType: [],
-      bottomWear: [],
-      dressType: [],
-      vehiclePresence: null,
-      car: [0, 1000],
-      bus: [0, 100],
-      truck: [0, 100],
-      motorbike: [0, 200],
-      bicycle: [0, 300],
-    })
+    resetGranularFilters()
   }
 
   return (
@@ -194,7 +190,7 @@ export function FilterSidebar() {
               <div className="space-y-2">
                 <label className="text-sm font-medium flex items-center gap-2">
                   <Search className="w-4 h-4" />
-                  Search cities...
+                  Search by city...
                 </label>
                 
                 <div className="relative">
@@ -264,8 +260,99 @@ export function FilterSidebar() {
                 )}
               </div>
 
-              {/* Filter Accordion */}
-              <Accordion type="multiple" className="w-full space-y-2">
+              {/* Behavior Metric Search */}
+              <div className="space-y-2">
+                <label className="text-sm font-medium flex items-center gap-2">
+                  <Activity className="w-4 h-4" />
+                  Search by behaviour...
+                </label>
+                
+                <div className="relative">
+                  <Button
+                    variant="outline"
+                    role="combobox"
+                    aria-expanded={behaviorSearchOpen}
+                    className="w-full justify-between text-left font-normal"
+                    onClick={() => setBehaviorSearchOpen(!behaviorSearchOpen)}
+                    disabled={loading}
+                  >
+                    <span className="truncate">
+                      {selectedMetrics.length > 0 
+                        ? BEHAVIOR_METRICS.find(m => m.value === selectedMetrics[0])?.label 
+                        : "All Behaviors"}
+                    </span>
+                    <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                  </Button>
+                  
+                  {behaviorSearchOpen && (
+                    <div className="absolute top-full left-0 right-0 z-50 mt-1 bg-popover border rounded-md shadow-md">
+                      <Command>
+                        <CommandInput placeholder="Search behaviors..." className="h-9" />
+                        <CommandList className="max-h-[300px] overflow-auto">
+                          <CommandEmpty>No behavior found.</CommandEmpty>
+                          <CommandGroup>
+                            <CommandItem
+                              value="all"
+                              onSelect={() => handleBehaviorSelect("all")}
+                              className="cursor-pointer"
+                            >
+                              <Check
+                                className={`mr-2 h-4 w-4 ${
+                                  selectedMetrics.length === 0 ? "opacity-100" : "opacity-0"
+                                }`}
+                              />
+                              All Behaviors
+                            </CommandItem>
+                            
+                            {BEHAVIOR_METRICS.map((metric) => {
+                              const Icon = metric.icon
+                              return (
+                                <CommandItem
+                                  key={metric.value}
+                                  value={metric.value}
+                                  onSelect={() => handleBehaviorSelect(metric.value)}
+                                  className="cursor-pointer"
+                                >
+                                  <Check
+                                    className={`mr-2 h-4 w-4 ${
+                                      selectedMetrics[0] === metric.value ? "opacity-100" : "opacity-0"
+                                    }`}
+                                  />
+                                  <Icon className="mr-2 h-4 w-4 text-muted-foreground" />
+                                  <div className="flex-1">
+                                    <div className="font-medium text-sm">{metric.label}</div>
+                                    <div className="text-xs text-muted-foreground">{metric.description}</div>
+                                  </div>
+                                </CommandItem>
+                              )
+                            })}
+                          </CommandGroup>
+                        </CommandList>
+                      </Command>
+                    </div>
+                  )}
+                </div>
+                
+                {behaviorSearchOpen && (
+                  <div 
+                    className="fixed inset-0 z-40" 
+                    onClick={() => setBehaviorSearchOpen(false)}
+                  />
+                )}
+              </div>
+
+              {/* Granular Filters Section */}
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 pt-2">
+                  <div className="h-px flex-1 bg-border" />
+                  <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                    Refine Filters
+                  </label>
+                  <div className="h-px flex-1 bg-border" />
+                </div>
+
+                {/* Filter Accordion */}
+                <Accordion type="single" collapsible className="w-full space-y-2">
                 
                 {/* City Context */}
                 <AccordionItem value="city-context">
@@ -848,24 +935,17 @@ export function FilterSidebar() {
                     </div>
                   </AccordionContent>
                 </AccordionItem>
-              </Accordion>
+                </Accordion>
+              </div>
 
               {/* Action Buttons */}
-              <div className="space-y-2 pt-4">
-                <Button 
-                  onClick={applyFilters}
-                  disabled={loading}
-                  className="w-full"
-                >
-                  <RefreshCw className="w-4 h-4 mr-2" />
-                  {loading ? "Loading..." : "Apply Filters"}
-                </Button>
-                
+              <div className="pt-4">
                 <Button 
                   onClick={resetFilters}
                   variant="outline"
                   className="w-full"
                 >
+                  <RefreshCw className="w-4 h-4 mr-2" />
                   Reset All Filters
                 </Button>
               </div>

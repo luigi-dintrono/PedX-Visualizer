@@ -53,7 +53,7 @@ interface CityVideo {
 }
 
 export function InfoSidebar() {
-  const { filteredCityData, selectedCity, setSelectedCity, cityData } = useFilter()
+  const { filteredCityData, selectedCity, setSelectedCity, cityData, selectedMetrics } = useFilter()
   const [topInsights, setTopInsights] = useState<TopInsight[]>([])
   const [cityVideos, setCityVideos] = useState<CityVideo[]>([])
   const [loading, setLoading] = useState(false)
@@ -319,7 +319,47 @@ export function InfoSidebar() {
     }
   }
 
-  // Empty Mode (no city selected)
+  // Metric Mode (metric selected, no city selected)
+  if (!selectedCity && selectedMetrics.length > 0) {
+    return (
+      <div className="h-full w-full border-l bg-background">
+        <div className="h-full overflow-y-auto">
+          <div className="p-4 space-y-6">
+            <div className="space-y-4">
+              <h2 className="text-lg font-semibold text-foreground">Metric Analysis</h2>
+              
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-sm flex items-center gap-2">
+                    <BarChart3 className="w-4 h-4" />
+                    {selectedMetrics[0]} Overview
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-sm text-muted-foreground">
+                    Metric analysis view coming soon. This will display global insights and statistics for the selected behavior metric.
+                  </p>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-sm">Global Statistics</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-sm text-muted-foreground">
+                    Global averages, distributions, and comparative analysis will be displayed here.
+                  </p>
+                </CardContent>
+              </Card>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // Empty Mode (no city selected, no metric selected)
   if (!selectedCity || !filteredCityData) {
     return (
       <div className="h-full w-full border-l bg-background">

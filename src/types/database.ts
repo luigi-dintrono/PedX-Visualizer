@@ -67,7 +67,13 @@ export interface CityGlobeData {
   risky_crossing_rate: number | string | null;
   run_red_light_rate: number | string | null;
   crosswalk_usage_rate: number | string | null;
+  phone_usage_rate: number | string | null;
   avg_pedestrian_age: number | string | null;
+  avg_pedestrians_per_video: number | string | null;
+  avg_crossing_speed: number | string | null;
+  avg_crossing_time: number | string | null;
+  avg_phone_usage_ratio: number | string | null;
+  avg_road_width: number | string | null;
   traffic_mortality: number | string | null;
   literacy_rate: number | string | null;
   gini: number | string | null;

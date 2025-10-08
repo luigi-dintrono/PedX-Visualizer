@@ -332,10 +332,16 @@ SELECT
     AVG(v.run_red_light_ratio) as avg_run_red_light_ratio,
     AVG(v.crosswalk_usage_ratio) as avg_crosswalk_usage_ratio,
     AVG(p.age) as avg_pedestrian_age,
+    -- Additional behavior metrics for heatmap
+    AVG(v.crossing_speed) as avg_crossing_speed,
+    AVG(v.crossing_time) as avg_crossing_time,
+    AVG(v.phone_usage_ratio) as avg_phone_usage_ratio,
+    AVG(v.avg_road_width) as avg_road_width,
     -- Calculated rates
     COUNT(CASE WHEN p.risky_crossing THEN 1 END)::FLOAT / NULLIF(COUNT(p.id), 0) as risky_crossing_rate,
     COUNT(CASE WHEN p.run_red_light THEN 1 END)::FLOAT / NULLIF(COUNT(p.id), 0) as run_red_light_rate,
     COUNT(CASE WHEN p.crosswalk_use_or_not THEN 1 END)::FLOAT / NULLIF(COUNT(p.id), 0) as crosswalk_usage_rate,
+    COUNT(CASE WHEN p.phone_using THEN 1 END)::FLOAT / NULLIF(COUNT(p.id), 0) as phone_usage_rate,
     -- Heatmap intensity (composite score)
     COALESCE(
         (AVG(v.risky_crossing_ratio) + AVG(v.run_red_light_ratio)) / 2, 

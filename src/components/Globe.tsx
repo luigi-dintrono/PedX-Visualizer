@@ -41,6 +41,60 @@ const METRIC_CONFIG = {
       max: [0, 1, 0, 0.8], // Green for high usage
     },
   },
+  phone_usage: {
+    property: 'phone_usage_rate',
+    name: 'Phone Usage While Crossing',
+    unit: '%',
+    colorScale: {
+      min: [0, 1, 0, 0.6], // Green for low usage
+      max: [1, 0, 0, 0.8], // Red for high usage (dangerous)
+    },
+  },
+  crossing_speed: {
+    property: 'avg_crossing_speed',
+    name: 'Average Crossing Speed',
+    unit: 'm/s',
+    colorScale: {
+      min: [1, 0, 0, 0.6], // Red for slow (dangerous)
+      max: [0, 1, 0, 0.8], // Green for fast (safer)
+    },
+  },
+  crossing_time: {
+    property: 'avg_crossing_time',
+    name: 'Average Crossing Time',
+    unit: 'seconds',
+    colorScale: {
+      min: [0, 1, 0, 0.6], // Green for short time (safer)
+      max: [1, 0, 0, 0.8], // Red for long time (more exposure)
+    },
+  },
+  avg_age: {
+    property: 'avg_pedestrian_age',
+    name: 'Average Pedestrian Age',
+    unit: 'years',
+    colorScale: {
+      min: [0.2, 0.6, 1, 0.6], // Blue for young
+      max: [1, 0.6, 0.2, 0.8], // Orange for elderly
+    },
+  },
+  pedestrian_density: {
+    property: 'avg_pedestrians_per_video',
+    name: 'Pedestrian Density',
+    unit: 'pedestrians',
+    colorScale: {
+      min: [0, 1, 0, 0.6], // Green for low density
+      max: [1, 0.6, 0, 0.8], // Orange for high density
+    },
+  },
+  road_width: {
+    property: 'avg_road_width',
+    name: 'Average Road Width',
+    unit: 'meters',
+    colorScale: {
+      min: [0, 1, 0, 0.6], // Green for narrow (safer)
+      max: [1, 0, 0, 0.8], // Red for wide (more dangerous)
+    },
+  },
   traffic_mortality: {
     property: 'traffic_mortality',
     name: 'Traffic Mortality',
@@ -60,21 +114,114 @@ export default function Globe() {
   const {
     selectedCity,
     selectedMetrics,
+    granularFilters,
     filteredCityData,
     cityData,
   } = useFilter();
 
-  // Fetch global data for heatmap
+  // Fetch global data for heatmap with filters
   const fetchGlobalData = useCallback(async (): Promise<CityGlobeData[]> => {
     try {
-      const response = await fetch('/api/data');
+      // Build query parameters from granular filters
+      const params = new URLSearchParams();
+      
+      // Array filters
+      if (granularFilters.continents.length > 0) {
+        params.append('continents', granularFilters.continents.join(','));
+      }
+      
+      if (granularFilters.weather.length > 0) {
+        params.append('weather', granularFilters.weather.join(','));
+      }
+
+      if (granularFilters.gender.length > 0) {
+        params.append('gender', granularFilters.gender.join(','));
+      }
+
+      if (granularFilters.shirtType.length > 0) {
+        params.append('shirtType', granularFilters.shirtType.join(','));
+      }
+
+      if (granularFilters.bottomWear.length > 0) {
+        params.append('bottomWear', granularFilters.bottomWear.join(','));
+      }
+      
+      // Population range (only if not default)
+      if (granularFilters.population[0] > 0) {
+        params.append('minPopulation', granularFilters.population[0].toString());
+      }
+      if (granularFilters.population[1] < 50000000) {
+        params.append('maxPopulation', granularFilters.population[1].toString());
+      }
+      
+      // Age range (only if not default)
+      if (granularFilters.ageRange[0] > 0) {
+        params.append('minAge', granularFilters.ageRange[0].toString());
+      }
+      if (granularFilters.ageRange[1] < 100) {
+        params.append('maxAge', granularFilters.ageRange[1].toString());
+      }
+
+      // Crossing speed range
+      if (granularFilters.crossingSpeed[0] > 0) {
+        params.append('minCrossingSpeed', granularFilters.crossingSpeed[0].toString());
+      }
+      if (granularFilters.crossingSpeed[1] < 5) {
+        params.append('maxCrossingSpeed', granularFilters.crossingSpeed[1].toString());
+      }
+
+      // Road width range
+      if (granularFilters.avgRoadWidth[0] > 0) {
+        params.append('minRoadWidth', granularFilters.avgRoadWidth[0].toString());
+      }
+      if (granularFilters.avgRoadWidth[1] < 50) {
+        params.append('maxRoadWidth', granularFilters.avgRoadWidth[1].toString());
+      }
+
+      // Boolean filters (Pedestrian Behavior)
+      if (granularFilters.riskyCrossing === true) {
+        params.append('riskyCrossing', 'true');
+      }
+      if (granularFilters.runRedLight === true) {
+        params.append('runRedLight', 'true');
+      }
+      if (granularFilters.crosswalkUse === true) {
+        params.append('crosswalkUse', 'true');
+      }
+
+      // Clothing & Accessories
+      if (granularFilters.phoneUse === true) {
+        params.append('phoneUse', 'true');
+      }
+      if (granularFilters.backpack === true) {
+        params.append('backpack', 'true');
+      }
+      if (granularFilters.umbrella === true) {
+        params.append('umbrella', 'true');
+      }
+      if (granularFilters.handbag === true) {
+        params.append('handbag', 'true');
+      }
+      if (granularFilters.suitcase === true) {
+        params.append('suitcase', 'true');
+      }
+
+      // Vehicles
+      if (granularFilters.vehiclePresence === true) {
+        params.append('vehiclePresence', 'true');
+      }
+      
+      const queryString = params.toString();
+      const url = queryString ? `/api/data?${queryString}` : '/api/data';
+      
+      const response = await fetch(url);
       const result = await response.json();
       return result.success ? result.data : [];
     } catch (error) {
       console.error('Error fetching global data:', error);
       return [];
     }
-  }, []);
+  }, [granularFilters]);
 
   // Get color for metric value
   const getColorForMetric = useCallback((
@@ -404,6 +551,25 @@ export default function Globe() {
 
     handleCityZoom();
   }, [selectedCity, zoomToCity]);
+
+  // Listen for globe reset event
+  useEffect(() => {
+    const resetGlobe = async () => {
+      if (!viewerRef.current) return;
+      
+      const Cesium = await import('cesium');
+      const viewer = viewerRef.current;
+      
+      // Reset camera to original global view
+      viewer.camera.flyTo({
+        destination: Cesium.Cartesian3.fromDegrees(0, 20, 20000000),
+        duration: 2,
+      });
+    };
+
+    window.addEventListener('resetGlobe', resetGlobe);
+    return () => window.removeEventListener('resetGlobe', resetGlobe);
+  }, []);
 
   return (
     <div className="relative w-full h-full">
