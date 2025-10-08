@@ -68,11 +68,15 @@ make check-deps        # Verify required dependencies
 ### Database Operations
 
 ```bash
-make db-setup          # Initialize database schema
-make db-reset          # Reset database (destructive!)
-make db-aggregate      # Aggregate CSV data into database
-make db-refresh-views  # Refresh materialized views
-make db-pipeline       # Complete database update (aggregate + refresh)
+make db-setup                    # Initialize database schema
+make db-reset                    # Reset database (destructive!)
+make db-aggregate                # Aggregate CSV data into database
+make db-refresh-views            # Refresh materialized views
+make db-generate-insights        # Generate city insights from data
+make db-generate-insights-verbose # Generate insights with detailed logging
+make db-generate-insights-dry    # Test insights generation (dry run)
+make db-pipeline                 # Complete database update (aggregate + refresh + insights)
+make db-refresh-all              # Refresh views and regenerate insights
 ```
 
 ### Application Management
@@ -103,6 +107,16 @@ make check-csvs        # Check CSV files in summary_data
 make debug-db          # Debug database connection
 make check-ports       # Check port availability
 make quick-start       # Quick start (assumes setup done)
+```
+
+### GeoNames API Integration
+
+```bash
+make geonames-update         # Update missing city data with GeoNames API
+make geonames-update-force   # Force update ALL cities with missing data
+make geonames-update-verbose # Update with detailed logging
+make geonames-report         # Generate missing data report
+make geonames-help           # Show GeoNames API help
 ```
 
 ### Examples
@@ -199,6 +213,7 @@ The aggregation script will:
 - Process all CSV files in the `summary_data` directory
 - Create analytics dimensions and facts tables
 - Handle incremental updates without duplicates
+- Automatically update missing city data using GeoNames API
 - Generate summary statistics
 
 ### 5. Run the Development Server
@@ -277,6 +292,245 @@ City-level analytics with geographic context.
 
 #### analytics_cross_dimension
 Cross-dimensional analysis (e.g., gender vs age comparisons).
+
+## City Insights System
+
+The PedX Visualizer includes an advanced **City Insights** generation system that automatically creates templated, data-driven insights for each city based on statistical analysis and relevance scoring.
+
+### Overview
+
+The insights system analyzes city-specific data against global baselines to generate meaningful, contextual insights. Each city receives between 3-10 insights, prioritized by relevance and statistical significance.
+
+### Features
+
+- **12+ Insight Templates**: Covering speed, behavior, demographics, weather, vehicles, and more
+- **Relevance Scoring**: Insights are ranked by statistical significance and importance
+- **Data Confidence Levels**: Each insight includes confidence indicators (high/medium/low)
+- **Threshold-Based Filtering**: Only statistically significant insights are shown
+- **Automatic Generation**: Updates with database refresh pipeline
+- **Frontend Display**: Beautiful UI cards in the Info Sidebar
+
+### Materialized Views
+
+#### mv_city_insights
+Pre-computed city-level data for fast insight generation:
+- **Speed Metrics**: Average crossing speed, rankings, percentiles
+- **Behavioral Metrics**: Risky crossing, red light violations, crosswalk usage
+- **Demographics**: Age distribution, gender ratios, phone usage
+- **Environmental**: Dominant weather, weather variety
+- **Vehicles**: Top vehicle types by city
+- **Continental Rankings**: City's rank within its continent
+
+#### mv_global_insights
+Global baseline data for comparative analysis:
+- **Global Averages**: Crossing speed, risk rates, age, etc.
+- **Global Medians**: Robust central tendency measures
+- **Percentiles**: Q1, Q3 for outlier detection
+- **Totals**: Cities, videos, pedestrians analyzed
+
+### Insight Templates
+
+The system includes 12 templated insights with intelligent relevance logic:
+
+#### 1. Speed Comparison (speed_vs_global)
+Compares city crossing speed to global average.
+- **Show if**: `|delta| >= 10%` AND `video_count >= 3`
+- **Example**: "Barcelona's average crossing speed is 2.1 m/s, 15% faster than the global average of 1.83 m/s"
+
+#### 2. Speed Ranking (speed_ranking)
+Shows city's global rank for crossing speed.
+- **Show if**: `rank <= 5` OR `rank >= total_cities - 5`
+- **Example**: "Barcelona ranks #3 out of 47 cities for crossing speed"
+
+#### 3. Risk Assessment (risk_assessment)
+Highlights risky crossing patterns.
+- **Show if**: `|delta| >= 15%` AND `pedestrian_count >= 50`
+- **Example**: "Barcelona has a 23.5% risky crossing rate, 18% higher than the global average"
+
+#### 4. Weather Dominance (weather_dominance)
+Identifies dominant weather conditions.
+- **Show if**: Weather appears in `>= 40%` of videos OR low weather variety
+- **Example**: "Sunny conditions are most common in Barcelona"
+
+#### 5. Vehicle Composition (top_vehicles)
+Shows most common vehicle types.
+- **Show if**: `video_count >= 2`
+- **Example**: "Most common vehicles in Barcelona: car, motorbike, bus"
+
+#### 6. Age Demographics (age_demographics)
+Compares average pedestrian age to global.
+- **Show if**: `|delta| >= 20%` AND `pedestrian_count >= 30`
+- **Example**: "Average pedestrian age in Barcelona is 32.4 years, 23% lower than the global median"
+
+#### 7. Phone Usage (phone_usage)
+Highlights phone usage while crossing.
+- **Show if**: `usage >= 15%`
+- **Example**: "18.3% of pedestrians in Barcelona use phones while crossing"
+
+#### 8. Crosswalk Usage (crosswalk_usage)
+Analyzes crosswalk usage patterns.
+- **Show if**: `|delta| >= 25%` AND `pedestrian_count >= 40`
+- **Example**: "Barcelona shows 67.8% crosswalk usage, 32% higher than the global average"
+
+#### 9. Continental Leadership (continent_leader)
+Identifies continent leaders.
+- **Show if**: `continent_rank = 1`
+- **Example**: "Barcelona has the fastest crossing speed in Europe"
+
+#### 10. Gender Balance (gender_balance)
+Shows gender distribution patterns.
+- **Show if**: `|delta from 50%| >= 25%`
+- **Example**: "62.3% of pedestrians in Barcelona are male, showing male-dominant crossing patterns"
+
+#### 11. Red Light Violations (red_light_violations)
+Highlights red light running behavior.
+- **Show if**: `rate >= 10%` OR `rank <= 10`
+- **Example**: "Barcelona has a 14.2% red light violation rate, ranking #7 globally"
+
+#### 12. Data Confidence (data_confidence)
+Shows sample size for transparency.
+- **Always shown** (lowest priority)
+- **Example**: "Based on analysis of 8 videos and 342 pedestrians"
+
+### Usage
+
+#### Generating Insights
+
+```bash
+# Generate insights for all cities
+make db-generate-insights
+
+# Generate with detailed logging
+make db-generate-insights-verbose
+
+# Test without updating database
+make db-generate-insights-dry
+
+# Automatic generation as part of pipeline
+make db-pipeline  # Includes aggregation + refresh + insights
+```
+
+#### Refreshing Insights
+
+```bash
+# Refresh views and regenerate insights
+make db-refresh-all
+
+# Or as separate steps
+make db-refresh-views
+make db-generate-insights
+```
+
+#### Standalone Script
+
+```bash
+# Basic usage
+node scripts/generate-city-insights.js
+
+# With verbose logging
+node scripts/generate-city-insights.js --verbose
+
+# Dry run (test without updating)
+node scripts/generate-city-insights.js --dry-run --verbose
+```
+
+### Data Structure
+
+Insights are stored in the `cities` table as JSONB:
+
+```json
+{
+  "insights": [
+    {
+      "id": "47_speed_vs_global",
+      "category": "speed",
+      "text": "Barcelona's average crossing speed is 2.1 m/s, 15% faster than global average",
+      "relevance_score": 0.85,
+      "data_confidence": "high",
+      "metrics": {
+        "city_value": 2.1,
+        "comparison_value": 1.83,
+        "delta_percent": 15.2
+      }
+    }
+  ]
+}
+```
+
+### Frontend Display
+
+Insights are automatically displayed in the **Info Sidebar** when a city is selected:
+
+- **Sorted by Relevance**: Most important insights shown first
+- **Category Badges**: Visual indicators for insight type
+- **Confidence Levels**: Color-coded confidence badges
+- **Responsive Cards**: Beautiful, readable insight cards
+- **Top 6 Display**: Shows the 6 most relevant insights
+
+### Customization
+
+#### Adding New Templates
+
+Edit `/scripts/generate-city-insights.js` and add to `INSIGHT_TEMPLATES`:
+
+```javascript
+{
+  id: 'your_insight_id',
+  category: 'your_category',
+  name: 'Template Name',
+  evaluate: (cityData, globalData) => {
+    // Your logic here
+    if (/* conditions not met */) return null;
+    
+    return {
+      text: "Your templated insight text",
+      relevance_score: 0.7, // 0.0 to 1.0
+      metrics: {
+        city_value: someValue,
+        comparison_value: globalValue,
+        delta_percent: deltaPercent
+      }
+    };
+  }
+}
+```
+
+#### Adjusting Thresholds
+
+Modify the conditions in each template's `evaluate` function:
+- Change minimum sample sizes
+- Adjust delta percentages
+- Modify relevance score calculations
+
+#### Changing Display Count
+
+Edit `/src/components/info-sidebar.tsx`:
+```tsx
+.slice(0, 6)  // Change 6 to your desired number
+```
+
+### Performance
+
+- **Materialized Views**: Pre-computed for fast generation
+- **Batch Processing**: All cities processed in single script run
+- **Minimal Overhead**: JSONB storage is efficient and indexed
+- **On-Demand Updates**: Only regenerate when data changes
+
+### Integration with Pipeline
+
+The insights system is fully integrated into the database pipeline:
+
+1. **CSV Aggregation** → Updates raw data
+2. **View Refresh** → Recomputes mv_city_insights & mv_global_insights
+3. **Insights Generation** → Creates templated insights from views
+4. **Frontend Display** → Automatically shows new insights
+
+Run the complete pipeline:
+```bash
+make db-pipeline
+```
+
+This ensures insights are always based on the latest data.
 
 ## API Endpoints
 
@@ -393,6 +647,64 @@ pedx-visualizer/
 - **Static Assets**: Cesium assets served from `/public/cesium`
 - **Webpack Configuration**: Automatic copying of Cesium Workers
 
+## GeoNames API Integration
+
+The system includes automatic city data completion using the GeoNames API to fill missing location information.
+
+### Features
+
+- **Automatic Data Completion**: Fills missing country, coordinates, continent data
+- **Smart Matching**: Uses similarity algorithms to find the best city match
+- **Rate Limiting**: Respects GeoNames API limits (1 request/second)
+- **Comprehensive Reporting**: Detailed reports on what data was updated
+- **Integration**: Runs automatically during CSV aggregation
+
+### Setup
+
+1. **Get GeoNames Username** (Free):
+   - Visit [https://www.geonames.org/login](https://www.geonames.org/login)
+   - Create a free account
+   - Add your username to `.env`:
+   ```
+   GEONAMES_USERNAME=your_username_here
+   ```
+
+2. **Usage**:
+   ```bash
+   # Update missing city data
+   make geonames-update
+   
+   # Force update ALL cities (including those with only optional data missing)
+   make geonames-update-force
+   
+   # Update with detailed logging
+   make geonames-update-verbose
+   
+   # Generate missing data report
+   make geonames-report
+   
+   # Run as part of aggregation
+   make db-aggregate  # Includes GeoNames update
+   ```
+
+### Data Updated
+
+The system automatically fills missing:
+- **Country**: Full country name
+- **State/Province**: Administrative division
+- **ISO3 Code**: Three-letter country code
+- **Continent**: Geographic continent
+- **Coordinates**: Latitude and longitude (critical for map display)
+- **Population**: City population (when available)
+
+### Reports
+
+The system generates detailed reports showing:
+- Cities successfully updated
+- Cities that failed to match
+- Cities skipped (only optional data missing)
+- Missing data patterns across all cities
+
 ## Future Enhancements
 
 This project is designed to be extended with:
@@ -403,6 +715,7 @@ This project is designed to be extended with:
 - **Data Export**: Implement CSV/JSON export functionality
 - **User Authentication**: Add user management and data access control
 - **More Metrics**: Add additional pedestrian behavior metrics
+- **Additional APIs**: Integrate with other geographic/demographic data sources
 
 ## Development Notes
 

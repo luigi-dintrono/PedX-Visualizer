@@ -3,6 +3,7 @@
 
 .PHONY: help install setup build start dev stop clean logs test lint format
 .PHONY: db-setup db-reset db-aggregate db-refresh-views db-pipeline
+.PHONY: geonames-update geonames-report geonames-help
 .PHONY: full-pipeline check-env check-deps
 
 # Default target
@@ -101,8 +102,8 @@ logs: ## Show application logs
 db-setup: check-env ## Initialize database schema
 	@echo "$(BLUE)Setting up database schema...$(NC)"
 	@if [ -f .env ]; then \
-		export $$(cat .env | xargs) && \
-		psql -h $$DB_HOST -p $$DB_PORT -U $$DB_USER -d $$DB_NAME -f database/schema.sql; \
+		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
+		psql $$DATABASE_URL -f database/schema.sql; \
 		echo "$(GREEN)✓ Database schema created$(NC)"; \
 	else \
 		echo "$(RED)Error: .env file not found. Run 'make setup' first$(NC)"; \
@@ -114,8 +115,8 @@ db-reset: ## Reset database (drop and recreate)
 	@read -p "Are you sure? (y/N): " confirm && [ "$$confirm" = "y" ] || exit 1
 	@echo "$(BLUE)Resetting database...$(NC)"
 	@if [ -f .env ]; then \
-		export $$(cat .env | xargs) && \
-		psql -h $$DB_HOST -p $$DB_PORT -U $$DB_USER -d $$DB_NAME -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"; \
+		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
+		psql $$DATABASE_URL -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"; \
 		make db-setup; \
 		echo "$(GREEN)✓ Database reset complete$(NC)"; \
 	else \
@@ -130,7 +131,7 @@ db-aggregate: ## Aggregate CSV data into database
 		exit 1; \
 	fi
 	@if [ -f .env ]; then \
-		export $$(cat .env | xargs) && \
+		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
 		node scripts/aggregate-csv-data.js; \
 		echo "$(GREEN)✓ Data aggregation complete$(NC)"; \
 	else \
@@ -141,16 +142,91 @@ db-aggregate: ## Aggregate CSV data into database
 db-refresh-views: ## Refresh materialized views
 	@echo "$(BLUE)Refreshing materialized views...$(NC)"
 	@if [ -f .env ]; then \
-		export $$(cat .env | xargs) && \
-		psql -h $$DB_HOST -p $$DB_PORT -U $$DB_USER -d $$DB_NAME -c "SELECT refresh_materialized_views();"; \
+		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
+		psql $$DATABASE_URL -c "SELECT refresh_materialized_views();"; \
 		echo "$(GREEN)✓ Materialized views refreshed$(NC)"; \
 	else \
 		echo "$(RED)Error: .env file not found$(NC)"; \
 		exit 1; \
 	fi
 
-db-pipeline: db-aggregate db-refresh-views ## Complete database update pipeline
-	@echo "$(GREEN)✓ Database pipeline complete$(NC)"
+db-generate-insights: ## Generate city insights from data
+	@echo "$(BLUE)Generating city insights...$(NC)"
+	@if [ -f .env ]; then \
+		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
+		node scripts/generate-city-insights.js; \
+		echo "$(GREEN)✓ City insights generated$(NC)"; \
+	else \
+		echo "$(RED)Error: .env file not found$(NC)"; \
+		exit 1; \
+	fi
+
+db-generate-insights-verbose: ## Generate insights with detailed logging
+	@echo "$(BLUE)Generating city insights (verbose)...$(NC)"
+	@if [ -f .env ]; then \
+		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
+		node scripts/generate-city-insights.js --verbose; \
+		echo "$(GREEN)✓ City insights generated$(NC)"; \
+	else \
+		echo "$(RED)Error: .env file not found$(NC)"; \
+		exit 1; \
+	fi
+
+db-generate-insights-dry: ## Test insights generation without updating database
+	@echo "$(BLUE)Testing insights generation (dry run)...$(NC)"
+	@if [ -f .env ]; then \
+		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
+		node scripts/generate-city-insights.js --dry-run --verbose; \
+		echo "$(GREEN)✓ Dry run complete$(NC)"; \
+	else \
+		echo "$(RED)Error: .env file not found$(NC)"; \
+		exit 1; \
+	fi
+
+db-pipeline: db-aggregate db-refresh-views db-generate-insights ## Complete database update pipeline
+	@echo "$(GREEN)✓ Database pipeline complete (with insights)$(NC)"
+
+db-refresh-all: db-refresh-views db-generate-insights ## Refresh views and regenerate insights
+	@echo "$(GREEN)✓ All database refreshes complete$(NC)"
+
+db-migrate-insights: ## Apply insights migration to existing database
+	@echo "$(BLUE)Applying insights migration...$(NC)"
+	@if [ -f .env ]; then \
+		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
+		psql $$DATABASE_URL -f scripts/migrate-add-insights.sql; \
+		echo "$(GREEN)✓ Insights migration complete$(NC)"; \
+	else \
+		echo "$(RED)Error: .env file not found$(NC)"; \
+		exit 1; \
+	fi
+
+# ===============================================
+# GEONAMES API INTEGRATION
+# ===============================================
+
+geonames-update: ## Update missing city data using GeoNames API
+	@echo "$(BLUE)🌍 Updating city data with GeoNames API...$(NC)"
+	node scripts/geonames-api.js update
+
+geonames-report: ## Generate missing data report
+	@echo "$(BLUE)📊 Generating missing data report...$(NC)"
+	node scripts/geonames-api.js report
+
+geonames-help: ## Show GeoNames API script help
+	@echo "$(BLUE)📖 GeoNames API Integration Help$(NC)"
+	node scripts/geonames-api.js help
+
+geonames-update-force: ## Force update ALL cities with missing data
+	@echo "$(BLUE)🌍 Force updating city data with GeoNames API...$(NC)"
+	node scripts/geonames-api.js update --force
+
+geonames-update-verbose: ## Update with verbose logging
+	@echo "$(BLUE)🌍 Updating city data with detailed logging...$(NC)"
+	node scripts/geonames-api.js update --verbose
+
+geonames-test: ## Test GeoNames API connectivity
+	@echo "$(BLUE)🧪 Testing GeoNames API...$(NC)"
+	node scripts/test-geonames.js
 
 # ===============================================
 # FULL PIPELINE OPERATIONS
@@ -249,9 +325,9 @@ docs: ## Generate documentation
 debug-db: ## Debug database connection
 	@echo "$(BLUE)Debugging database connection...$(NC)"
 	@if [ -f .env ]; then \
-		export $$(cat .env | xargs) && \
-		echo "Testing connection to: $$DB_HOST:$$DB_PORT/$$DB_NAME"; \
-		psql -h $$DB_HOST -p $$DB_PORT -U $$DB_USER -d $$DB_NAME -c "SELECT version();" || \
+		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
+		echo "Testing connection to: $$DATABASE_URL"; \
+		psql $$DATABASE_URL -c "SELECT version();" || \
 		echo "$(RED)Database connection failed$(NC)"; \
 	else \
 		echo "$(RED).env file not found$(NC)"; \

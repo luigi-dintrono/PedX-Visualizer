@@ -17,6 +17,9 @@ const csv = require('csv-parser');
 const { Pool } = require('pg');
 require('dotenv').config();
 
+// Import GeoNames API integration
+const GeoNamesAPI = require('./geonames-api');
+
 // Configuration
 const CSV_DIR = path.join(__dirname, '..', 'summary_data');
 const VERBOSE = process.argv.includes('--verbose');
@@ -150,7 +153,7 @@ class DatabaseAggregator {
         
         // Process video data to extract unique cities
         for (const row of videoData) {
-            // Skip if country is missing (required field), but handle special cases
+            // Handle missing country data - allow cities with missing data to be added for GeoNames processing
             if (!row.country || row.country.trim() === '') {
                 // Handle special cases where we know the location
                 if (row.city === 'Brooklyn') {
@@ -162,8 +165,15 @@ class DatabaseAggregator {
                     row.lon = '-73.9442';
                     console.log(`Added missing location data for Brooklyn, NY, USA`);
                 } else {
-                    console.log(`Skipping city ${row.city} - missing country data`);
-                    continue;
+                    // Allow cities with missing country data to be added - GeoNames will fill in missing data later
+                    console.log(`Adding city ${row.city} with missing country data - will be filled by GeoNames API`);
+                    // Set placeholder values to avoid null constraint violations
+                    row.country = row.country || 'Unknown';
+                    row.iso3 = row.iso3 || '';
+                    row.continent = row.continent || 'Unknown';
+                    row.state = row.state || '';
+                    row.lat = row.lat || null;
+                    row.lon = row.lon || null;
                 }
             }
             
@@ -432,7 +442,7 @@ class DatabaseAggregator {
                         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
                         $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38,
                         $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56,
-                        $57, $58, $59, $60, $61, $62, $63, $64
+                        $57, $58, $59, $60, $61, $62, $63
                     )
                     ON CONFLICT (video_id, track_id) 
                     DO UPDATE SET
@@ -746,6 +756,18 @@ async function main() {
         // Aggregate data
         await aggregator.aggregateCoreData();
         await aggregator.aggregateAnalytics();
+        
+        // Update missing city data using GeoNames API
+        console.log('\n🌍 Updating missing city data with GeoNames API...');
+        const geoNamesAPI = new GeoNamesAPI();
+        try {
+            await geoNamesAPI.processCities();
+        } catch (error) {
+            console.error('GeoNames API update failed:', error.message);
+            console.log('Continuing with aggregation...');
+        } finally {
+            await geoNamesAPI.close();
+        }
         
         // Generate summary
         await aggregator.generateSummary();

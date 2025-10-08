@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useCallback } from 'react';
 import { useFilter } from '@/contexts/FilterContext';
-import { CoreGlobalCrossingData } from '@/types/database';
+import { CityGlobeData } from '@/types/database';
 import type * as Cesium from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 
@@ -14,40 +14,40 @@ declare global {
 
 // Metric configuration for easy extensibility
 const METRIC_CONFIG = {
-  crossing_speed: {
-    property: 'crossing_speed_avg',
-    name: 'Crossing Speed',
-    unit: 'm/s',
+  risky_crossing: {
+    property: 'risky_crossing_rate',
+    name: 'Risky Crossing Rate',
+    unit: '%',
     colorScale: {
-      min: [0, 1, 0, 0.6], // Green for slow (RGBA)
-      max: [1, 0, 0, 0.8], // Red for fast (RGBA)
+      min: [0, 1, 0, 0.6], // Green for low risk (RGBA)
+      max: [1, 0, 0, 0.8], // Red for high risk (RGBA)
     },
   },
-  time_to_start: {
-    property: 'time_to_start_crossing_avg',
-    name: 'Time to Start',
-    unit: 's',
+  run_red_light: {
+    property: 'run_red_light_rate',
+    name: 'Run Red Light Rate',
+    unit: '%',
     colorScale: {
-      min: [0, 1, 0, 0.6], // Green for quick
-      max: [1, 0, 0, 0.8], // Red for slow
+      min: [0, 1, 0, 0.6], // Green for low rate
+      max: [1, 0, 0, 0.8], // Red for high rate
     },
   },
-  waiting_time: {
-    property: 'waiting_time_avg',
-    name: 'Waiting Time',
-    unit: 's',
+  crosswalk_usage: {
+    property: 'crosswalk_usage_rate',
+    name: 'Crosswalk Usage Rate',
+    unit: '%',
     colorScale: {
-      min: [0, 1, 0, 0.6], // Green for short wait
-      max: [1, 0, 0, 0.8], // Red for long wait
+      min: [1, 0, 0, 0.6], // Red for low usage
+      max: [0, 1, 0, 0.8], // Green for high usage
     },
   },
-  crossing_distance: {
-    property: 'crossing_distance_avg',
-    name: 'Crossing Distance',
-    unit: 'm',
+  traffic_mortality: {
+    property: 'traffic_mortality',
+    name: 'Traffic Mortality',
+    unit: 'per 100k',
     colorScale: {
-      min: [0, 1, 0, 0.6], // Green for short distance
-      max: [1, 0, 0, 0.8], // Red for long distance
+      min: [0, 1, 0, 0.6], // Green for low mortality
+      max: [1, 0, 0, 0.8], // Red for high mortality
     },
   },
 } as const;
@@ -65,7 +65,7 @@ export default function Globe() {
   } = useFilter();
 
   // Fetch global data for heatmap
-  const fetchGlobalData = useCallback(async (): Promise<CoreGlobalCrossingData[]> => {
+  const fetchGlobalData = useCallback(async (): Promise<CityGlobeData[]> => {
     try {
       const response = await fetch('/api/data');
       const result = await response.json();
@@ -110,7 +110,7 @@ export default function Globe() {
 
   // Create heatmap visualization
   const createHeatmap = useCallback(async (
-    data: CoreGlobalCrossingData[],
+    data: CityGlobeData[],
     metricType: string,
     Cesium: typeof import('cesium')
   ) => {

@@ -1,14 +1,14 @@
 "use client"
 
 import React, { createContext, useContext, useState, useEffect } from 'react'
-import { CityInsight, MetricInsight } from '@/types/database'
+import { CityGlobeData, MetricInsight } from '@/types/database'
 
 interface FilterState {
   selectedCity: string | null
   selectedMetrics: string[]
-  cityData: CityInsight[]
+  cityData: CityGlobeData[]
   metricData: MetricInsight[]
-  filteredCityData: CityInsight | null
+  filteredCityData: CityGlobeData | null
   filteredMetricData: MetricInsight | null
   loading: boolean
 }
@@ -25,9 +25,9 @@ const FilterContext = createContext<FilterContextType | undefined>(undefined)
 export function FilterProvider({ children }: { children: React.ReactNode }) {
   const [selectedCity, setSelectedCity] = useState<string | null>(null)
   const [selectedMetrics, setSelectedMetrics] = useState<string[]>([])
-  const [cityData, setCityData] = useState<CityInsight[]>([])
+  const [cityData, setCityData] = useState<CityGlobeData[]>([])
   const [metricData, setMetricData] = useState<MetricInsight[]>([])
-  const [filteredCityData, setFilteredCityData] = useState<CityInsight | null>(null)
+  const [filteredCityData, setFilteredCityData] = useState<CityGlobeData | null>(null)
   const [filteredMetricData, setFilteredMetricData] = useState<MetricInsight | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -55,9 +55,13 @@ export function FilterProvider({ children }: { children: React.ReactNode }) {
   }
 
   const applyFilters = () => {
+    console.log('FilterContext - applyFilters called with selectedCity:', selectedCity)
+    console.log('FilterContext - cityData length:', cityData.length)
+    
     // Filter city data
     if (selectedCity) {
       const city = cityData.find(c => c.city === selectedCity)
+      console.log('FilterContext - found city:', city?.city)
       setFilteredCityData(city || null)
     } else {
       setFilteredCityData(null)
@@ -75,6 +79,11 @@ export function FilterProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     refreshData()
   }, [])
+
+  // Automatically apply filters when selectedCity or selectedMetrics change
+  useEffect(() => {
+    applyFilters()
+  }, [selectedCity, selectedMetrics, cityData, metricData])
 
   const value: FilterContextType = {
     selectedCity,

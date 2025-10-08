@@ -120,6 +120,7 @@ export function FilterSidebar() {
     const newSelectedCity = cityName === "all" ? null : cityName
     setSelectedCity(newSelectedCity)
     setCitySearchOpen(false)
+    // applyFilters will be called automatically by the useEffect in FilterContext
   }
 
   const updateFilter = (key: string, value: any) => {

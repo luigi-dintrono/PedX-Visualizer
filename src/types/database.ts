@@ -26,19 +26,16 @@ export interface CoreGlobalCrossingData {
 }
 
 export interface CityInsight {
-  id: number;
-  city: string;
-  country: string;
-  population: number | null;
-  videos_analyzed: number;
-  crossing_speed_avg: number | null;
-  time_to_start_crossing_avg: number | null;
-  crossing_speed_rank: number;
-  quickest_to_start_rank: number;
-  crossing_speed_percentile: number;
-  time_to_start_percentile: number;
-  crossing_speed_insight: string;
-  time_to_start_insight: string;
+  id: string;
+  category: 'speed' | 'rank' | 'demographic' | 'weather' | 'vehicle' | 'behavior' | 'meta';
+  text: string;
+  relevance_score: number;
+  data_confidence: 'high' | 'medium' | 'low';
+  metrics: {
+    city_value: number;
+    comparison_value: number;
+    delta_percent: number;
+  };
 }
 
 export interface MetricInsight {
@@ -54,4 +51,25 @@ export interface MetricInsight {
   global_avg: number;
   global_median: number;
   insight: string;
+}
+
+export interface CityGlobeData {
+  id: number;
+  city: string;
+  country: string;
+  continent: string;
+  latitude: number | string;
+  longitude: number | string;
+  population: number | string | null;
+  videos_analyzed: number | string | null;
+  total_videos: number | string | null;
+  total_pedestrians: number | string | null;
+  risky_crossing_rate: number | string | null;
+  run_red_light_rate: number | string | null;
+  crosswalk_usage_rate: number | string | null;
+  avg_pedestrian_age: number | string | null;
+  traffic_mortality: number | string | null;
+  literacy_rate: number | string | null;
+  gini: number | string | null;
+  insights?: CityInsight[];
 }
