@@ -106,6 +106,37 @@ const METRIC_CONFIG = {
   },
 } as const;
 
+// Helper function to create radial gradient canvas for heatmap effect
+function createRadialGradientCanvas(color: any): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 256;
+  const ctx = canvas.getContext('2d');
+  
+  if (!ctx) return canvas;
+  
+  // Create radial gradient from center to edge
+  const gradient = ctx.createRadialGradient(128, 128, 0, 128, 128, 128);
+  
+  // Extract RGBA values from Cesium.Color
+  const r = Math.floor(color.red * 255);
+  const g = Math.floor(color.green * 255);
+  const b = Math.floor(color.blue * 255);
+  const a = color.alpha;
+  
+  // Center: full opacity
+  gradient.addColorStop(0, `rgba(${r}, ${g}, ${b}, ${a})`);
+  // Mid: medium opacity
+  gradient.addColorStop(0.5, `rgba(${r}, ${g}, ${b}, ${a * 0.5})`);
+  // Edge: fade to transparent
+  gradient.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`);
+  
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, 256, 256);
+  
+  return canvas;
+}
+
 export default function Globe() {
   const cesiumContainer = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Cesium.Viewer | null>(null);
@@ -308,38 +339,67 @@ export default function Globe() {
       const value = typeof rawValue === 'string' ? parseFloat(rawValue) : rawValue;
       const color = getColorForMetric(value, metricType, minValue, maxValue, Cesium);
       
-      // Scale point size based on value (larger for higher values)
+      // Scale ellipse size based on city population (or default if not available)
+      const population = typeof item.population === 'string' ? parseFloat(item.population) : item.population;
+      
+      // Calculate radius in meters based on population
+      // Formula: sqrt(population / π) with scaling factor for visibility
+      let radiusMeters = 5000; // Default 5km for unknown population
+      if (population && !isNaN(population) && population > 0) {
+        // Scale: 1M people = ~10km radius, 10M = ~30km radius
+        radiusMeters = Math.sqrt(population / Math.PI) * 3;
+        radiusMeters = Math.max(3000, Math.min(radiusMeters, 50000)); // Clamp between 3-50km
+      }
+      
+      // Intensity-based size modifier (higher values = slightly larger)
       const normalizedValue = (value - minValue) / (maxValue - minValue);
-      const pointSize = 8 + (normalizedValue * 12); // 8-20 pixel range
+      const intensityMultiplier = 0.8 + (normalizedValue * 0.4); // 0.8 to 1.2 range
+      radiusMeters *= intensityMultiplier;
 
+      // Create main ellipse (city coverage area)
       const entity = dataSource.entities.add({
         position: Cesium.Cartesian3.fromDegrees(
           typeof item.longitude === 'string' ? parseFloat(item.longitude) : item.longitude!,
           typeof item.latitude === 'string' ? parseFloat(item.latitude) : item.latitude!
         ),
+        ellipse: {
+          semiMinorAxis: radiusMeters,
+          semiMajorAxis: radiusMeters,
+          material: new Cesium.ImageMaterialProperty({
+            image: createRadialGradientCanvas(color),
+            transparent: true,
+          }),
+          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+          classificationType: Cesium.ClassificationType.TERRAIN,
+        },
+        // Add a central point for better visibility
         point: {
-          pixelSize: pointSize,
-          color: color,
+          pixelSize: 8,
+          color: color.withAlpha(0.9),
           outlineColor: Cesium.Color.WHITE,
-          outlineWidth: 1,
+          outlineWidth: 2,
           heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
           disableDepthTestDistance: Number.POSITIVE_INFINITY,
         },
         label: {
-          text: `${item.city}, ${item.country}\n${config.name}: ${value?.toFixed(2)} ${config.unit}`,
-          font: '12pt sans-serif',
+          text: `${item.city}, ${item.country}\n${config.name}: ${value?.toFixed(2)} ${config.unit}\nPopulation: ${population ? population.toLocaleString() : 'N/A'}`,
+          font: '14pt sans-serif',
           fillColor: Cesium.Color.WHITE,
           outlineColor: Cesium.Color.BLACK,
           outlineWidth: 2,
           style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-          pixelOffset: new Cesium.Cartesian2(0, -50),
+          pixelOffset: new Cesium.Cartesian2(0, -60),
           show: false, // Hide by default, show on hover
+          backgroundColor: Cesium.Color.BLACK.withAlpha(0.7),
+          showBackground: true,
+          backgroundPadding: new Cesium.Cartesian2(8, 4),
         },
         properties: {
           city: item.city,
           country: item.country,
           metricValue: value,
           metricType: metricType,
+          radiusMeters: radiusMeters,
         }
       });
     });
@@ -581,19 +641,26 @@ export default function Globe() {
       
       {/* Heatmap Legend - moved to bottom right */}
       {selectedMetrics.length > 0 && (
-        <div className="absolute bottom-4 right-4 bg-black/80 text-white p-3 rounded-lg text-sm">
-          <div className="font-semibold mb-2">
-            {METRIC_CONFIG[selectedMetrics[0] as keyof typeof METRIC_CONFIG]?.name || selectedMetrics[0]}
+        <div className="absolute bottom-4 right-4 bg-black/90 backdrop-blur-sm text-white p-4 rounded-lg text-sm shadow-lg max-w-xs">
+          <div className="font-semibold mb-3 text-base">
+            🗺️ {METRIC_CONFIG[selectedMetrics[0] as keyof typeof METRIC_CONFIG]?.name || selectedMetrics[0]}
           </div>
-          <div className="flex items-center space-x-2">
-            <div className="w-4 h-4 bg-green-500 rounded"></div>
-            <span>Low</span>
-            <div className="w-8 h-2 bg-gradient-to-r from-green-500 to-red-500 rounded"></div>
-            <span>High</span>
-            <div className="w-4 h-4 bg-red-500 rounded"></div>
-          </div>
-          <div className="text-xs text-gray-300 mt-1">
-            Unit: {METRIC_CONFIG[selectedMetrics[0] as keyof typeof METRIC_CONFIG]?.unit || ''}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <div className="w-5 h-5 bg-green-500/70 rounded-full blur-sm"></div>
+                <span className="text-xs">Low</span>
+              </div>
+              <div className="w-24 h-3 bg-gradient-to-r from-green-500 via-yellow-500 to-red-500 rounded-full opacity-70"></div>
+              <div className="flex items-center space-x-2">
+                <span className="text-xs">High</span>
+                <div className="w-5 h-5 bg-red-500/70 rounded-full blur-sm"></div>
+              </div>
+            </div>
+            <div className="text-xs text-gray-300 pt-2 border-t border-gray-600">
+              <div>Unit: <span className="font-mono">{METRIC_CONFIG[selectedMetrics[0] as keyof typeof METRIC_CONFIG]?.unit || ''}</span></div>
+              <div className="mt-1 text-gray-400">Area size reflects city population</div>
+            </div>
           </div>
         </div>
       )}
