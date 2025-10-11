@@ -73,7 +73,7 @@ interface FilterContextType extends FilterState {
   setSelectedCity: (city: string | null) => void
   setSelectedMetrics: (metrics: string[]) => void
   setGranularFilters: (filters: GranularFilters) => void
-  updateGranularFilter: (key: keyof GranularFilters, value: any) => void
+  updateGranularFilter: <K extends keyof GranularFilters>(key: K, value: GranularFilters[K]) => void
   resetGranularFilters: () => void
   applyFilters: () => void
   refreshData: () => void
@@ -158,7 +158,7 @@ export function FilterProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
-  const updateGranularFilter = (key: keyof GranularFilters, value: any) => {
+  const updateGranularFilter = <K extends keyof GranularFilters>(key: K, value: GranularFilters[K]) => {
     setGranularFilters(prev => ({ ...prev, [key]: value }))
   }
 
@@ -195,6 +195,7 @@ export function FilterProvider({ children }: { children: React.ReactNode }) {
   // Automatically apply filters when selectedCity or selectedMetrics change
   useEffect(() => {
     applyFilters()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedCity, selectedMetrics, cityData, metricData])
 
   const value: FilterContextType = {

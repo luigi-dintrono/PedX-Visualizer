@@ -1,7 +1,6 @@
 "use client"
 
 import { 
-  MapPin, 
   RefreshCw, 
   Check, 
   ChevronsUpDown, 
@@ -37,7 +36,6 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion"
 import { Button } from "@/components/ui/button"
-import { Checkbox } from "@/components/ui/checkbox"
 import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
 import {
@@ -48,7 +46,7 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command"
-import { useFilter } from "@/contexts/FilterContext"
+import { useFilter, GranularFilters } from "@/contexts/FilterContext"
 
 // Behavior metrics configuration
 const BEHAVIOR_METRICS = [
@@ -130,15 +128,15 @@ export function FilterSidebar() {
   // Alias for easier access
   const filters = granularFilters
 
-  // Legacy setFilters wrapper - updates context instead
-  const setFilters = (updater: any) => {
-    if (typeof updater === 'function') {
-      const newFilters = updater(granularFilters)
-      Object.entries(newFilters).forEach(([key, value]) => {
-        updateGranularFilter(key as keyof typeof granularFilters, value)
-      })
-    }
-  }
+  // Legacy setFilters wrapper - updates context instead (unused but kept for compatibility)
+  // const setFilters = (updater: (filters: GranularFilters) => GranularFilters) => {
+  //   if (typeof updater === 'function') {
+  //     const newFilters = updater(granularFilters)
+  //     Object.entries(newFilters).forEach(([key, value]) => {
+  //       updateGranularFilter(key as keyof typeof granularFilters, value)
+  //     })
+  //   }
+  // }
 
 
   // Get unique cities from the data
@@ -163,8 +161,8 @@ export function FilterSidebar() {
     setBehaviorSearchOpen(false)
   }
 
-  const updateFilter = (key: string, value: any) => {
-    updateGranularFilter(key as keyof typeof granularFilters, value)
+  const updateFilter = <K extends keyof GranularFilters>(key: K, value: GranularFilters[K]) => {
+    updateGranularFilter(key, value)
   }
 
   const toggleArrayFilter = (key: string, value: string) => {

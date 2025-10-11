@@ -1,7 +1,6 @@
 "use client"
 
 import { 
-  MapPin, 
   BarChart3, 
   TrendingUp, 
   Clock, 
@@ -11,7 +10,6 @@ import {
   Globe, 
   Cloud, 
   User, 
-  Shirt, 
   Car,
   ChevronRight,
   ExternalLink,
@@ -52,11 +50,49 @@ interface CityVideo {
   country: string;
 }
 
+interface MetricData {
+  metric: {
+    key: string;
+    name: string;
+    unit: string;
+    description: string;
+  };
+  global: {
+    value: number;
+    totalCities: number;
+    totalVideos: number;
+    totalPedestrians: number;
+  };
+  cities: Array<{
+    rank: number;
+    city: string;
+    country: string;
+    continent: string;
+    value: number;
+    videoCount: number;
+    pedestrianCount: number;
+    deltaVsGlobal: number | null;
+    rankValue: number | null;
+  }>;
+}
+
+interface MetricRelationship {
+  factor: string;
+  category: string;
+  value: string;
+  effect: string;
+  effectSize: number;
+  description: string;
+}
+
 export function InfoSidebar() {
-  const { filteredCityData, selectedCity, setSelectedCity, cityData, selectedMetrics } = useFilter()
+  const { filteredCityData, selectedCity, setSelectedCity, cityData, selectedMetrics, granularFilters } = useFilter()
   const [topInsights, setTopInsights] = useState<TopInsight[]>([])
   const [cityVideos, setCityVideos] = useState<CityVideo[]>([])
+  const [metricData, setMetricData] = useState<MetricData | null>(null)
+  const [metricRelationships, setMetricRelationships] = useState<MetricRelationship[]>([])
   const [loading, setLoading] = useState(false)
+  const [metricLoading, setMetricLoading] = useState(false)
 
   // Debug logging to see what's happening
   useEffect(() => {
@@ -66,13 +102,21 @@ export function InfoSidebar() {
 
   // Fetch top insights for Empty mode
   useEffect(() => {
-    if (!selectedCity) {
+    if (!selectedCity && selectedMetrics.length === 0) {
       fetchTopInsights()
       setCityVideos([]) // Clear videos when no city selected
-    } else {
+      setMetricData(null)
+      setMetricRelationships([])
+    } else if (!selectedCity && selectedMetrics.length > 0) {
+      // Fetch metric data
+      fetchMetricData(selectedMetrics[0])
+      fetchMetricRelationships(selectedMetrics[0])
+    } else if (selectedCity) {
       fetchCityVideos(selectedCity)
+      setMetricData(null)
+      setMetricRelationships([])
     }
-  }, [selectedCity])
+  }, [selectedCity, selectedMetrics])
 
   const fetchTopInsights = async () => {
     setLoading(true)
@@ -99,6 +143,35 @@ export function InfoSidebar() {
     } catch (error) {
       console.error('Error fetching city videos:', error)
       setCityVideos([])
+    }
+  }
+
+  const fetchMetricData = async (metric: string) => {
+    setMetricLoading(true)
+    try {
+      const response = await fetch(`/api/metrics/${metric}`)
+      const result = await response.json()
+      if (result.success) {
+        setMetricData(result.data)
+      }
+    } catch (error) {
+      console.error('Error fetching metric data:', error)
+      setMetricData(null)
+    } finally {
+      setMetricLoading(false)
+    }
+  }
+
+  const fetchMetricRelationships = async (metric: string) => {
+    try {
+      const response = await fetch(`/api/metrics/${metric}/relationships`)
+      const result = await response.json()
+      if (result.success) {
+        setMetricRelationships(result.data.relationships)
+      }
+    } catch (error) {
+      console.error('Error fetching metric relationships:', error)
+      setMetricRelationships([])
     }
   }
 
@@ -321,38 +394,236 @@ export function InfoSidebar() {
 
   // Metric Mode (metric selected, no city selected)
   if (!selectedCity && selectedMetrics.length > 0) {
+    if (metricLoading || !metricData) {
+      return (
+        <div className="h-full w-full border-l bg-background flex items-center justify-center">
+          <div className="text-center">
+            <div className="text-sm text-muted-foreground">Loading metric data...</div>
+          </div>
+        </div>
+      )
+    }
+
+    // Get active filter badges for display
+    const getActiveFilterChips = () => {
+      const chips = []
+      if (granularFilters.continents.length > 0) {
+        chips.push(...granularFilters.continents.map(c => ({ label: c, type: 'continent' })))
+      }
+      if (granularFilters.weather.length > 0) {
+        chips.push(...granularFilters.weather.map(w => ({ label: w, type: 'weather' })))
+      }
+      if (granularFilters.daytime !== null) {
+        chips.push({ label: granularFilters.daytime ? 'Day' : 'Night', type: 'time' })
+      }
+      if (granularFilters.gender.length > 0) {
+        chips.push(...granularFilters.gender.map(g => ({ label: g, type: 'gender' })))
+      }
+      return chips
+    }
+
+    const activeFilters = getActiveFilterChips()
+
     return (
       <div className="h-full w-full border-l bg-background">
         <div className="h-full overflow-y-auto">
           <div className="p-4 space-y-6">
-            <div className="space-y-4">
-              <h2 className="text-lg font-semibold text-foreground">Metric Analysis</h2>
+            {/* Header */}
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <Activity className="w-6 h-6 text-primary" />
+                <h2 className="text-xl font-bold">{metricData.metric.name}</h2>
+              </div>
               
+              <p className="text-sm text-muted-foreground">
+                {metricData.metric.description}
+              </p>
+
+              {/* Global Average Badge */}
+              <div className="flex items-center gap-2">
+                <Badge variant="secondary" className="text-sm font-mono">
+                  Global: {metricData.global.value?.toFixed(2)} {metricData.metric.unit}
+                </Badge>
+                <span className="text-xs text-muted-foreground">
+                  across {metricData.global.totalCities} cities
+                </span>
+              </div>
+
+              {/* Active Filters */}
+              {activeFilters.length > 0 && (
+                <div className="flex flex-wrap gap-2 pt-2 border-t">
+                  <span className="text-xs text-muted-foreground">Filters:</span>
+                  {activeFilters.map((chip, idx) => (
+                    <Badge key={idx} variant="outline" className="text-xs capitalize">
+                      {chip.label}
+                    </Badge>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Top Cities */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <TrendingUp className="w-4 h-4" />
+                  Top Cities
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="p-0">
+                <div className="divide-y max-h-[300px] overflow-y-auto">
+                  {metricData.cities.slice(0, 10).map((city) => (
+                    <ListItem
+                      key={city.city}
+                      onClick={() => setSelectedCity(city.city)}
+                    >
+                      <div className="flex items-center gap-3 flex-1">
+                        <div className="text-lg font-bold text-muted-foreground w-8">
+                          #{city.rank}
+                        </div>
+                        <div className="text-xl">
+                          {getCountryEmoji(city.country)}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="font-medium text-sm">
+                            {city.city}, {city.country}
+                          </div>
+                          <div className="flex items-center gap-3 text-xs text-muted-foreground mt-1">
+                            <span className="font-mono font-bold text-foreground">
+                              {city.value.toFixed(2)} {metricData.metric.unit}
+                            </span>
+                            {city.deltaVsGlobal !== null && (
+                              <span className={city.deltaVsGlobal > 0 ? 'text-red-600' : 'text-green-600'}>
+                                {city.deltaVsGlobal > 0 ? '↑' : '↓'} {Math.abs(city.deltaVsGlobal).toFixed(1)}% vs global
+                              </span>
+                            )}
+                            <span>{city.videoCount} videos</span>
+                          </div>
+                        </div>
+                      </div>
+                      <ChevronRight className="w-4 h-4 text-muted-foreground" />
+                    </ListItem>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Relationships */}
+            {metricRelationships.length > 0 && (
               <Card>
                 <CardHeader>
                   <CardTitle className="text-sm flex items-center gap-2">
                     <BarChart3 className="w-4 h-4" />
-                    {selectedMetrics[0]} Overview
+                    Key Relationships
                   </CardTitle>
                 </CardHeader>
-                <CardContent>
-                  <p className="text-sm text-muted-foreground">
-                    Metric analysis view coming soon. This will display global insights and statistics for the selected behavior metric.
-                  </p>
+                <CardContent className="space-y-3">
+                  {metricRelationships.slice(0, 6).map((rel, idx) => (
+                    <div key={idx} className="p-3 bg-muted/50 rounded-md border border-border/50">
+                      <div className="flex items-start justify-between gap-2 mb-1">
+                        <div className="flex items-center gap-2">
+                          {rel.category === 'Environmental' && <Cloud className="w-4 h-4" />}
+                          {rel.category === 'Demographics' && <User className="w-4 h-4" />}
+                          {rel.category === 'Vehicles' && <Car className="w-4 h-4" />}
+                          <span className="text-xs font-medium">{rel.factor}</span>
+                        </div>
+                        <Badge 
+                          variant={rel.effectSize > 0 ? 'destructive' : 'default'} 
+                          className="text-xs"
+                        >
+                          {rel.effect}
+                        </Badge>
+                      </div>
+                      <p className="text-xs text-muted-foreground">{rel.description}</p>
+                    </div>
+                  ))}
                 </CardContent>
               </Card>
+            )}
 
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-sm">Global Statistics</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-sm text-muted-foreground">
-                    Global averages, distributions, and comparative analysis will be displayed here.
-                  </p>
-                </CardContent>
-              </Card>
-            </div>
+            {/* Top Insights */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <Zap className="w-4 h-4" />
+                  Key Insights
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                <ul className="space-y-2 text-sm">
+                  <li className="flex items-start gap-2">
+                    <span className="text-primary mt-1">•</span>
+                    <span>
+                      <strong>{metricData.cities[0]?.city}</strong> leads with {metricData.cities[0]?.value.toFixed(2)} {metricData.metric.unit}, 
+                      {metricData.cities[0]?.deltaVsGlobal && metricData.cities[0].deltaVsGlobal > 0 ? ' significantly above' : ' below'} the global average.
+                    </span>
+                  </li>
+                  {metricRelationships.length > 0 && (
+                    <li className="flex items-start gap-2">
+                      <span className="text-primary mt-1">•</span>
+                      <span>{metricRelationships[0].description}</span>
+                    </li>
+                  )}
+                  <li className="flex items-start gap-2">
+                    <span className="text-primary mt-1">•</span>
+                    <span>
+                      Data collected from {metricData.global.totalVideos} videos across {metricData.global.totalCities} cities, 
+                      analyzing {metricData.global.totalPedestrians.toLocaleString()} pedestrian crossings.
+                    </span>
+                  </li>
+                </ul>
+              </CardContent>
+            </Card>
+
+            {/* All Cities Table */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <Globe className="w-4 h-4" />
+                  All Cities ({metricData.cities.length})
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="p-0">
+                <div className="max-h-[400px] overflow-y-auto">
+                  <table className="w-full text-xs">
+                    <thead className="bg-muted/50 sticky top-0">
+                      <tr>
+                        <th className="text-left p-2 font-medium">#</th>
+                        <th className="text-left p-2 font-medium">City</th>
+                        <th className="text-left p-2 font-medium">Country</th>
+                        <th className="text-right p-2 font-medium">Value</th>
+                        <th className="text-right p-2 font-medium">Δ Global</th>
+                        <th className="text-right p-2 font-medium">Videos</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {metricData.cities.map((city) => (
+                        <tr 
+                          key={city.city}
+                          className="hover:bg-muted/50 cursor-pointer"
+                          onClick={() => setSelectedCity(city.city)}
+                        >
+                          <td className="p-2 text-muted-foreground">#{city.rank}</td>
+                          <td className="p-2 font-medium">{city.city}</td>
+                          <td className="p-2 text-muted-foreground">{city.country}</td>
+                          <td className="p-2 text-right font-mono">
+                            {city.value.toFixed(2)} {metricData.metric.unit}
+                          </td>
+                          <td className={`p-2 text-right ${
+                            city.deltaVsGlobal && city.deltaVsGlobal > 0 ? 'text-red-600' : 'text-green-600'
+                          }`}>
+                            {city.deltaVsGlobal !== null 
+                              ? `${city.deltaVsGlobal > 0 ? '+' : ''}${city.deltaVsGlobal.toFixed(1)}%`
+                              : 'N/A'}
+                          </td>
+                          <td className="p-2 text-right text-muted-foreground">{city.videoCount}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
           </div>
         </div>
       </div>
