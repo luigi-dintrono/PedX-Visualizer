@@ -148,6 +148,7 @@ export default function Globe() {
     granularFilters,
     filteredCityData,
     cityData,
+    setSelectedCity,
   } = useFilter();
 
   // Fetch global data for heatmap with filters
@@ -290,7 +291,8 @@ export default function Globe() {
   const createHeatmap = useCallback(async (
     data: CityGlobeData[],
     metricType: string,
-    Cesium: typeof import('cesium')
+    Cesium: typeof import('cesium'),
+    onCityClick?: (cityName: string) => void
   ) => {
     if (!viewerRef.current || !data.length) return;
 
@@ -407,13 +409,6 @@ export default function Globe() {
     // Add data source to viewer
     viewer.dataSources.add(dataSource);
 
-    // Add click handler for entity selection
-    viewer.selectedEntityChanged.addEventListener(() => {
-      if (viewer.selectedEntity && viewer.selectedEntity.label) {
-        (viewer.selectedEntity.label.show as any) = true;
-      }
-    });
-
     // Add hover effects
     const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
     
@@ -433,6 +428,18 @@ export default function Globe() {
       }
     }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
 
+    // Add click handler to select city
+    handler.setInputAction((event: any) => {
+      const pickedObject = viewer.scene.pick(event.position);
+      
+      if (Cesium.defined(pickedObject) && pickedObject.id && pickedObject.id.properties) {
+        const cityName = pickedObject.id.properties.city?.getValue();
+        if (cityName && onCityClick) {
+          onCityClick(cityName);
+        }
+      }
+    }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
   }, [getColorForMetric]);
 
   // Zoom to city
@@ -441,65 +448,68 @@ export default function Globe() {
 
     const viewer = viewerRef.current;
     
-    // Find city in data
+    // Find city in the existing cityData (same data source as heatmap)
     const cityInfo = cityData.find(city => city.city === cityName);
-    if (!cityInfo) return;
+    if (!cityInfo) {
+      console.warn(`City ${cityName} not found in cityData`);
+      return;
+    }
 
-    // Try to get coordinates from global data
-    try {
-      const response = await fetch(`/api/data?city=${encodeURIComponent(cityName)}`);
-      const result = await response.json();
-      
-      if (result.success && result.data.length > 0) {
-        const cityData = result.data[0];
-        const lat = typeof cityData.latitude === 'string' ? parseFloat(cityData.latitude) : cityData.latitude;
-        const lng = typeof cityData.longitude === 'string' ? parseFloat(cityData.longitude) : cityData.longitude;
-        if (lat && lng && !isNaN(lat) && !isNaN(lng)) {
-          viewer.camera.flyTo({
-            destination: Cesium.Cartesian3.fromDegrees(
-              lng,
-              lat,
-              10000 // 10km altitude
-            ),
-            duration: 2.0,
-            orientation: {
-              heading: Cesium.Math.toRadians(0.0),
-              pitch: Cesium.Math.toRadians(-45.0),
-            }
-          });
-          return;
-        }
+    // Extract coordinates - use the EXACT same logic as the heatmap
+    const lat = typeof cityInfo.latitude === 'string' ? parseFloat(cityInfo.latitude) : cityInfo.latitude;
+    const lng = typeof cityInfo.longitude === 'string' ? parseFloat(cityInfo.longitude) : cityInfo.longitude;
+    
+    if (!lat || !lng || isNaN(lat) || isNaN(lng)) {
+      console.warn(`Invalid coordinates for ${cityName}: lat=${lat}, lng=${lng}`);
+      return;
+    }
+
+    // Get population for appropriate zoom level
+    const population = typeof cityInfo.population === 'string' ? parseFloat(cityInfo.population) : cityInfo.population;
+    
+    // Calculate zoom altitude based on city size
+    // Larger cities need higher altitude to see the full heatmap circle
+    let altitude = 15000; // Default 15km
+    if (population && !isNaN(population) && population > 0) {
+      // Match the heatmap radius calculation
+      let radiusMeters = Math.sqrt(population / Math.PI) * 3;
+      radiusMeters = Math.max(3000, Math.min(radiusMeters, 50000));
+      // Zoom out to 2.5x the radius so the full circle is visible
+      altitude = radiusMeters * 2.5;
+      // Clamp between 10km and 80km
+      altitude = Math.max(10000, Math.min(altitude, 80000));
+    }
+
+    console.log(`Zooming to ${cityName}: lat=${lat}, lng=${lng}, altitude=${altitude}`);
+
+    // Calculate offset to compensate for pitch angle
+    // When camera is tilted at -45°, the center of view is actually SOUTH of target
+    // We need to offset the target point slightly south to compensate
+    const pitchAngle = -45.0; // degrees
+    const pitchRadians = Cesium.Math.toRadians(pitchAngle);
+    
+    // Calculate how much to offset based on altitude and pitch
+    // tan(pitch) * altitude gives horizontal distance to actual center point
+    const offsetDistance = Math.tan(Math.abs(pitchRadians)) * altitude;
+    
+    // Convert to latitude offset (roughly 111km per degree of latitude)
+    const latOffsetDegrees = (offsetDistance / 111000); // meters to degrees
+    
+    // Adjust target latitude SOUTH to account for viewing angle
+    const adjustedLat = lat - latOffsetDegrees;
+
+    console.log(`Adjusted coordinates: original lat=${lat}, adjusted lat=${adjustedLat}, offset=${latOffsetDegrees}`);
+
+    // Fly to the city with centered view
+    viewer.camera.flyTo({
+      destination: Cesium.Cartesian3.fromDegrees(lng, adjustedLat, altitude),
+      duration: 2.0,
+      orientation: {
+        heading: Cesium.Math.toRadians(0.0),
+        pitch: Cesium.Math.toRadians(pitchAngle),
+        roll: 0.0
       }
-    } catch (error) {
-      console.error('Error fetching city coordinates:', error);
-    }
-
-    // Fallback: use city name to approximate location (this is a simple approach)
-    // In a real app, you'd have a geocoding service
-    const cityCoordinates: { [key: string]: [number, number] } = {
-      'New York': [-74.006, 40.7128],
-      'London': [-0.1276, 51.5074],
-      'Tokyo': [139.6503, 35.6762],
-      'Paris': [2.3522, 48.8566],
-      'Berlin': [13.4050, 52.5200],
-      'Sydney': [151.2093, -33.8688],
-      'San Francisco': [-122.4194, 37.7749],
-      'Los Angeles': [-118.2437, 34.0522],
-      'Chicago': [-87.6298, 41.8781],
-      'Toronto': [-79.3832, 43.6532],
-    };
-
-    const coords = cityCoordinates[cityName];
-    if (coords) {
-      viewer.camera.flyTo({
-        destination: Cesium.Cartesian3.fromDegrees(coords[0], coords[1], 10000),
-        duration: 2.0,
-        orientation: {
-          heading: Cesium.Math.toRadians(0.0),
-          pitch: Cesium.Math.toRadians(-45.0),
-        }
-      });
-    }
+    });
   }, [cityData]);
 
   // Initialize Cesium
@@ -527,6 +537,8 @@ export default function Globe() {
         timeline: false,
         fullscreenButton: false,
         vrButton: false,
+        infoBox: false, // Disable the default info box that shows entity IDs
+        selectionIndicator: false, // Disable the green selection indicator
       });
       // Hide the Cesium Ion attribution
       (viewer.cesiumWidget.creditContainer as HTMLElement).style.display = "none";
@@ -594,11 +606,11 @@ export default function Globe() {
       
       // Use the first selected metric for heatmap
       const metricType = selectedMetrics[0];
-      await createHeatmap(data, metricType, Cesium);
+      await createHeatmap(data, metricType, Cesium, setSelectedCity);
     };
 
     updateHeatmap();
-  }, [selectedMetrics, createHeatmap, fetchGlobalData]);
+  }, [selectedMetrics, createHeatmap, fetchGlobalData, setSelectedCity]);
 
   // Handle city selection changes
   useEffect(() => {
