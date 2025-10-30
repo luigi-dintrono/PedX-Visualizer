@@ -283,6 +283,19 @@ export default function Globe() {
     }
   }, [granularFilters]);
 
+  // Scene mode controls
+  const morphTo2D = useCallback(async () => {
+    if (!viewerRef.current) return;
+    const Cesium = await import('cesium');
+    viewerRef.current.scene.morphTo2D(0.8);
+  }, []);
+
+  const morphTo3D = useCallback(async () => {
+    if (!viewerRef.current) return;
+    const Cesium = await import('cesium');
+    viewerRef.current.scene.morphTo3D(0.8);
+  }, []);
+
   // Get color for metric value
   const getColorForMetric = useCallback((
     value: number | null,
@@ -575,6 +588,7 @@ export default function Globe() {
       const viewer = new Cesium.Viewer(cesiumContainer.current, {
         terrain: Cesium.Terrain.fromWorldTerrain(),
         homeButton: true,
+        // Use built-in SceneModePicker UI
         sceneModePicker: true,
         baseLayerPicker: true,
         imageryProviderViewModels: safeImageryProviderViewModels,
@@ -595,6 +609,64 @@ export default function Globe() {
       (viewer.cesiumWidget.creditContainer as HTMLElement).style.display = "none";
 
       viewerRef.current = viewer;
+
+      // Hide Columbus View (2.5D) option from the SceneModePicker UI robustly
+      try {
+        const smp: any = (viewer as any).sceneModePicker;
+        const Command = (Cesium as any).Command;
+
+        const hideColumbus = () => {
+          // Disable the command if possible
+          if (smp?.viewModel?.morphToColumbusView && Command) {
+            smp.viewModel.morphToColumbusView = new Command(() => {}, false);
+          }
+          // Hide button by known class, title attribute, or by position (middle button)
+          const container: HTMLElement | undefined = smp?.container as HTMLElement | undefined;
+          if (container) {
+            const btnByClass = container.querySelector('.cesium-sceneModePicker-buttonColumbus') as HTMLElement | null;
+            if (btnByClass) btnByClass.style.display = 'none';
+            // Fallback: search any button whose title mentions Columbus
+            const buttons = Array.from(container.querySelectorAll('button')) as HTMLButtonElement[];
+            buttons.forEach((b) => {
+              const title = (b.getAttribute('title') || '').toLowerCase();
+              if (title.includes('columbus')) {
+                b.style.display = 'none';
+              }
+            });
+            // Fallback: hide middle button (order typically 3D, Columbus, 2D)
+            const wrapper = container.querySelector('.cesium-sceneModePicker-wrapper') as HTMLElement | null;
+            if (wrapper) {
+              const middle = wrapper.querySelector('button:nth-child(2)') as HTMLElement | null;
+              if (middle) middle.style.display = 'none';
+            }
+          }
+        };
+
+        // Inject global CSS as a final fallback to enforce hiding
+        try {
+          const style = document.createElement('style');
+          style.setAttribute('data-hide-columbus', 'true');
+          style.textContent = `
+            .cesium-sceneModePicker-buttonColumbus { display: none !important; }
+            .cesium-sceneModePicker-wrapper button[title*="Columbus"],
+            .cesium-sceneModePicker-wrapper button[title*="columbus"] { display: none !important; }
+            /* Middle button is Columbus in default layout */
+            .cesium-sceneModePicker-wrapper button:nth-child(2) { display: none !important; }
+          `;
+          // Only append once
+          if (!document.head.querySelector('style[data-hide-columbus="true"]')) {
+            document.head.appendChild(style);
+          }
+        } catch (_) {}
+
+        hideColumbus();
+        // Observe for re-renders to ensure it stays hidden
+        const container: HTMLElement | undefined = smp?.container as HTMLElement | undefined;
+        if (container && (window as any).MutationObserver) {
+          const mo = new MutationObserver(() => hideColumbus());
+          mo.observe(container, { childList: true, subtree: true, attributes: true });
+        }
+      } catch (_) {}
 
       // Error listeners to surface real provider/render errors in console
       try {
@@ -642,6 +714,51 @@ export default function Globe() {
 
       // Disable default double-click behavior
       viewer.cesiumWidget.screenSpaceEventHandler.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
+
+      // Re-sync dots/heatmap when switching 3D ↔ 2D
+      try {
+        viewer.scene.morphComplete.addEventListener(async () => {
+          const mode = viewer.scene.mode;
+          // In 2D, no terrain depth testing; in 3D, enable occlusion
+          viewer.scene.globe.depthTestAgainstTerrain = mode !== Cesium.SceneMode.SCENE2D;
+
+          // Adjust existing entities to the new mode
+          if (dataSourceRef.current) {
+            const entities = dataSourceRef.current.entities.values;
+            entities.forEach((ent: any) => {
+              if (ent.billboard) {
+                if (mode === Cesium.SceneMode.SCENE2D) {
+                  ent.billboard.heightReference = Cesium.HeightReference.NONE;
+                  ent.billboard.eyeOffset = new Cesium.Cartesian3(0, 0, 0);
+                  ent.billboard.disableDepthTestDistance = Number.POSITIVE_INFINITY;
+                } else {
+                  ent.billboard.heightReference = Cesium.HeightReference.RELATIVE_TO_GROUND;
+                  ent.billboard.eyeOffset = new Cesium.Cartesian3(0, 0, -5000);
+                  ent.billboard.disableDepthTestDistance = 1000000;
+                }
+              }
+              if (ent.label) {
+                if (mode === Cesium.SceneMode.SCENE2D) {
+                  ent.label.disableDepthTestDistance = Number.POSITIVE_INFINITY;
+                } else {
+                  ent.label.disableDepthTestDistance = 1000000;
+                }
+              }
+            });
+          }
+
+          // If a metric is active, rebuild the heatmap to ensure perfect alignment in new mode
+          try {
+            if (selectedMetrics.length > 0) {
+              const data = await fetchGlobalData();
+              await createHeatmap(data, selectedMetrics[0], Cesium, setSelectedCity);
+            }
+          } catch (e) {
+            // eslint-disable-next-line no-console
+            console.warn('Heatmap rebuild after morph failed:', e);
+          }
+        });
+      } catch (_) {}
     };
 
     const timeoutId = setTimeout(() => {
@@ -727,6 +844,7 @@ export default function Globe() {
         className="w-full h-full"
         style={{ width: '100%', height: '100%' }}
       />
+      
       
       {/* Heatmap Legend - moved to bottom right */}
       {selectedMetrics.length > 0 && (
