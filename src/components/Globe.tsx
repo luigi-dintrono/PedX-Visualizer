@@ -527,11 +527,25 @@ export default function Globe() {
 
       Cesium.Ion.defaultAccessToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJiY2FhOThlNi1iNDMwLTQyYTQtYmNjNy0zNGMyYzIwNTg1YTUiLCJpZCI6MzQxNDgwLCJpYXQiOjE3NTc5MzY2Mzh9.ATR_-WPV_pD-R9uod-sFaDzlzDYM0f-MlmGRFg393d4';
 
+      // Use Cesium's default sets, which include all Ion imagery/terrain options available with the token
+      const imageryProviderViewModels = (Cesium as any).createDefaultImageryProviderViewModels
+        ? (Cesium as any).createDefaultImageryProviderViewModels()
+        : [];
+      // Filter out Ion imagery options that can fail without proper entitlements
+      const blockedImageryNames = new Set(['Sentinel-2', 'Blue Marble', 'Earth at night', 'Earth at Night']);
+      const safeImageryProviderViewModels = imageryProviderViewModels.filter((vm: any) => !blockedImageryNames.has(vm?.name));
+
+      const terrainProviderViewModels = (Cesium as any).createDefaultTerrainProviderViewModels
+        ? (Cesium as any).createDefaultTerrainProviderViewModels()
+        : [];
+
       const viewer = new Cesium.Viewer(cesiumContainer.current, {
         terrain: Cesium.Terrain.fromWorldTerrain(),
         homeButton: true,
         sceneModePicker: true,
-        baseLayerPicker: false,
+        baseLayerPicker: true,
+        imageryProviderViewModels: safeImageryProviderViewModels,
+        terrainProviderViewModels,
         navigationHelpButton: false,
         animation: false,
         timeline: false,
@@ -544,6 +558,32 @@ export default function Globe() {
       (viewer.cesiumWidget.creditContainer as HTMLElement).style.display = "none";
 
       viewerRef.current = viewer;
+
+      // Error listeners to surface real provider/render errors in console
+      try {
+        viewer.scene.globe.terrainProvider.errorEvent.addEventListener((err: any) => {
+          // eslint-disable-next-line no-console
+          console.error('Terrain provider error:', err);
+        });
+      } catch (_) {}
+
+      try {
+        viewer.imageryLayers.layerAdded.addEventListener((layer: any) => {
+          try {
+            layer.imageryProvider?.errorEvent?.addEventListener((err: any) => {
+              // eslint-disable-next-line no-console
+              console.error('Imagery provider error:', err);
+            });
+          } catch (_) {}
+        });
+      } catch (_) {}
+
+      try {
+        viewer.scene.renderError.addEventListener((err: any) => {
+          // eslint-disable-next-line no-console
+          console.error('Scene render error:', err);
+        });
+      } catch (_) {}
 
       // Set initial camera position (global view)
       viewer.camera.setView({
