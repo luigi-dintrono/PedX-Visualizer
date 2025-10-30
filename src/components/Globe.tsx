@@ -137,6 +137,34 @@ function createRadialGradientCanvas(color: any): HTMLCanvasElement {
   return canvas;
 }
 
+// Helper for a small circular dot sprite with white outline
+function createDotCanvas(color: any): HTMLCanvasElement {
+  const size = 20;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return canvas;
+
+  const r = Math.floor(color.red * 255);
+  const g = Math.floor(color.green * 255);
+  const b = Math.floor(color.blue * 255);
+
+  // Outer white outline
+  ctx.beginPath();
+  ctx.arc(size / 2, size / 2, size / 2 - 1, 0, Math.PI * 2);
+  ctx.fillStyle = 'white';
+  ctx.fill();
+
+  // Inner colored circle
+  ctx.beginPath();
+  ctx.arc(size / 2, size / 2, size / 2 - 3, 0, Math.PI * 2);
+  ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.95)`;
+  ctx.fill();
+
+  return canvas;
+}
+
 export default function Globe() {
   const cesiumContainer = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Cesium.Viewer | null>(null);
@@ -362,7 +390,8 @@ export default function Globe() {
       const entity = dataSource.entities.add({
         position: Cesium.Cartesian3.fromDegrees(
           typeof item.longitude === 'string' ? parseFloat(item.longitude) : item.longitude!,
-          typeof item.latitude === 'string' ? parseFloat(item.latitude) : item.latitude!
+          typeof item.latitude === 'string' ? parseFloat(item.latitude) : item.latitude!,
+          30 // lift slightly above ground to avoid terrain clipping
         ),
         ellipse: {
           semiMinorAxis: radiusMeters,
@@ -374,14 +403,16 @@ export default function Globe() {
           heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
           classificationType: Cesium.ClassificationType.TERRAIN,
         },
-        // Add a central point for better visibility
-        point: {
-          pixelSize: 8,
-          color: color.withAlpha(0.9),
-          outlineColor: Cesium.Color.WHITE,
-          outlineWidth: 2,
-          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
-          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        // Central marker (billboard) for better visibility and to avoid terrain clipping
+        billboard: {
+          image: createDotCanvas(color),
+          scale: 1.0,
+          heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND,
+          // Pull forward in eye space to avoid local terrain clipping while still occluding behind globe
+          eyeOffset: new Cesium.Cartesian3(0, 0, -5000),
+          disableDepthTestDistance: 1000000,
+          verticalOrigin: Cesium.VerticalOrigin.CENTER,
+          horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
         },
         label: {
           text: `${item.city}, ${item.country}\n${config.name}: ${value?.toFixed(2)} ${config.unit}\nPopulation: ${population ? population.toLocaleString() : 'N/A'}`,
@@ -392,6 +423,8 @@ export default function Globe() {
           style: Cesium.LabelStyle.FILL_AND_OUTLINE,
           pixelOffset: new Cesium.Cartesian2(0, -60),
           show: false, // Hide by default, show on hover
+          // Keep labels readable when in front hemisphere, but not through the back side of the globe
+          disableDepthTestDistance: 1000000,
           backgroundColor: Cesium.Color.BLACK.withAlpha(0.7),
           showBackground: true,
           backgroundPadding: new Cesium.Cartesian2(8, 4),
@@ -554,6 +587,10 @@ export default function Globe() {
         infoBox: false, // Disable the default info box that shows entity IDs
         selectionIndicator: false, // Disable the green selection indicator
       });
+      // Occlude primitives by globe/terrain
+      try {
+        viewer.scene.globe.depthTestAgainstTerrain = true;
+      } catch (_) {}
       // Hide the Cesium Ion attribution
       (viewer.cesiumWidget.creditContainer as HTMLElement).style.display = "none";
 
