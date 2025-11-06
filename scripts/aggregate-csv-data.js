@@ -92,6 +92,7 @@ class DatabaseAggregator {
     constructor() {
         this.cityCache = new Map(); // Cache for city lookups
         this.videoCache = new Map(); // Cache for video lookups
+        this.currentImportBatchId = null;
     }
 
     async initialize() {
@@ -113,9 +114,47 @@ class DatabaseAggregator {
         }
     }
 
+    async startImportBatch(description = null) {
+        // Create import batch record
+        const batchDescription = description || `Import on ${new Date().toISOString()}`;
+        const result = await pool.query(`
+            INSERT INTO import_batches (description, import_date)
+            VALUES ($1, CURRENT_TIMESTAMP)
+            RETURNING id, import_date
+        `, [batchDescription]);
+        
+        this.currentImportBatchId = result.rows[0].id;
+        console.log(`📦 Started import batch #${this.currentImportBatchId} at ${result.rows[0].import_date}`);
+        log(`Import batch started: ${batchDescription}`);
+        return this.currentImportBatchId;
+    }
+
+    async finalizeImportBatch() {
+        if (this.currentImportBatchId) {
+            // Update batch with final counts
+            const result = await pool.query(`
+                UPDATE import_batches 
+                SET 
+                    record_count = (SELECT COUNT(*) FROM videos WHERE import_batch_id = $1),
+                    file_count = (SELECT COUNT(DISTINCT file_name) FROM (
+                        SELECT unnest(string_to_array(metadata->>'files', ',')) as file_name
+                        FROM import_batches WHERE id = $1
+                    ) sub)
+                WHERE id = $1
+                RETURNING record_count
+            `, [this.currentImportBatchId]);
+            
+            console.log(`✅ Completed import batch #${this.currentImportBatchId} with ${result.rows[0]?.record_count || 0} records`);
+            log(`Import batch finalized: ${this.currentImportBatchId}`);
+        }
+    }
+
     // Core data aggregation (cities, videos, pedestrians)
     async aggregateCoreData() {
         log('Aggregating core data...');
+        
+        // Start import batch
+        await this.startImportBatch('CSV data aggregation');
         
         try {
             // Read CSV files
@@ -140,9 +179,13 @@ class DatabaseAggregator {
             // Process pedestrians
             await this.aggregatePedestrians(pedestrianData);
             
+            // Finalize import batch
+            await this.finalizeImportBatch();
+            
             log(`Processed ${videoData.length} cities, ${videoData.length} videos, ${pedestrianData.length} pedestrians`);
         } catch (error) {
             console.error('Error aggregating core data:', error);
+            throw error;
         }
     }
 
@@ -246,6 +289,12 @@ class DatabaseAggregator {
     async aggregateVideos(videoData, timeMap) {
         log('Aggregating videos data...');
 
+        if (!this.currentImportBatchId) {
+            await this.startImportBatch('Video aggregation');
+        }
+
+        const importDate = new Date();
+
         for (const row of videoData) {
             try {
                 const cityKey = `${row.city}_${row.country}`;
@@ -256,7 +305,16 @@ class DatabaseAggregator {
                     continue;
                 }
 
-                const videoData = {
+                // Parse data_collected_date from CSV if available, otherwise use import date
+                let dataCollectedDate = null;
+                if (row.data_collected_date) {
+                    const parsedDate = new Date(row.data_collected_date);
+                    if (!isNaN(parsedDate.getTime())) {
+                        dataCollectedDate = parsedDate.toISOString().split('T')[0];
+                    }
+                }
+
+                const videoDataValues = {
                     city_id: cityId,
                     link: cleanString(row.link),
                     video_name: cleanString(row.video_name),
@@ -286,8 +344,21 @@ class DatabaseAggregator {
                     cones_prob: safeNumeric(row.cones_prob),
                     accident_prob: safeNumeric(row.accident_prob),
                     crossing_time: safeNumeric(row.crossing_time),
-                    crossing_speed: safeNumeric(row.crossing_speed)
+                    crossing_speed: safeNumeric(row.crossing_speed),
+                    data_collected_date: dataCollectedDate,
+                    import_batch_id: this.currentImportBatchId
                 };
+
+                // Check if video already exists
+                const existing = await pool.query(
+                    'SELECT id, first_imported_at FROM videos WHERE link = $1',
+                    [videoDataValues.link]
+                );
+
+                const isUpdate = existing.rows.length > 0;
+                const firstImportedAt = isUpdate 
+                    ? existing.rows[0].first_imported_at 
+                    : importDate;
 
                 const result = await pool.query(`
                     INSERT INTO videos (
@@ -297,10 +368,12 @@ class DatabaseAggregator {
                         crosswalk_usage_ratio, traffic_signs_ratio, total_vehicles, top3_vehicles,
                         main_weather, sidewalk_prob, crosswalk_prob, traffic_light_prob,
                         avg_road_width, crack_prob, potholes_prob, police_car_prob,
-                        arrow_board_prob, cones_prob, accident_prob, crossing_time, crossing_speed
+                        arrow_board_prob, cones_prob, accident_prob, crossing_time, crossing_speed,
+                        data_collected_date, import_batch_id, first_imported_at, last_updated_at
                     ) VALUES (
                         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-                        $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30
+                        $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30,
+                        $31, $32, $33, $34
                     )
                     ON CONFLICT (link) 
                     DO UPDATE SET
@@ -333,12 +406,76 @@ class DatabaseAggregator {
                         accident_prob = EXCLUDED.accident_prob,
                         crossing_time = EXCLUDED.crossing_time,
                         crossing_speed = EXCLUDED.crossing_speed,
-                        updated_at = CURRENT_TIMESTAMP
-                    RETURNING id
-                `, Object.values(videoData));
+                        data_collected_date = COALESCE(EXCLUDED.data_collected_date, videos.data_collected_date),
+                        import_batch_id = EXCLUDED.import_batch_id,
+                        last_updated_at = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP,
+                        -- Preserve first_imported_at if it exists
+                        first_imported_at = COALESCE(videos.first_imported_at, CURRENT_TIMESTAMP)
+                    RETURNING id, first_imported_at
+                `, [
+                    videoDataValues.city_id,
+                    videoDataValues.link,
+                    videoDataValues.video_name,
+                    videoDataValues.city_link,
+                    videoDataValues.duration_seconds,
+                    videoDataValues.total_frames,
+                    videoDataValues.analysis_seconds,
+                    videoDataValues.total_pedestrians,
+                    videoDataValues.total_crossed_pedestrians,
+                    videoDataValues.average_age,
+                    videoDataValues.phone_usage_ratio,
+                    videoDataValues.risky_crossing_ratio,
+                    videoDataValues.run_red_light_ratio,
+                    videoDataValues.crosswalk_usage_ratio,
+                    videoDataValues.traffic_signs_ratio,
+                    videoDataValues.total_vehicles,
+                    videoDataValues.top3_vehicles,
+                    videoDataValues.main_weather,
+                    videoDataValues.sidewalk_prob,
+                    videoDataValues.crosswalk_prob,
+                    videoDataValues.traffic_light_prob,
+                    videoDataValues.avg_road_width,
+                    videoDataValues.crack_prob,
+                    videoDataValues.potholes_prob,
+                    videoDataValues.police_car_prob,
+                    videoDataValues.arrow_board_prob,
+                    videoDataValues.cones_prob,
+                    videoDataValues.accident_prob,
+                    videoDataValues.crossing_time,
+                    videoDataValues.crossing_speed,
+                    videoDataValues.data_collected_date,
+                    videoDataValues.import_batch_id,
+                    firstImportedAt,
+                    importDate
+                ]);
+                
+                // Track update history if video was updated (not first import)
+                if (isUpdate) {
+                    try {
+                        await pool.query(`
+                            INSERT INTO video_update_history (
+                                video_id, import_batch_id, updated_at,
+                                risky_crossing_ratio, run_red_light_ratio, crosswalk_usage_ratio,
+                                total_pedestrians, metrics_snapshot
+                            ) VALUES ($1, $2, CURRENT_TIMESTAMP, $3, $4, $5, $6, $7)
+                        `, [
+                            result.rows[0].id,
+                            this.currentImportBatchId,
+                            videoDataValues.risky_crossing_ratio,
+                            videoDataValues.run_red_light_ratio,
+                            videoDataValues.crosswalk_usage_ratio,
+                            videoDataValues.total_pedestrians,
+                            JSON.stringify(videoDataValues)
+                        ]);
+                    } catch (historyError) {
+                        // Non-critical error, log but continue
+                        log(`Warning: Could not create update history for video ${row.link}:`, historyError);
+                    }
+                }
                 
                 this.videoCache.set(row.link, result.rows[0].id);
-                log(`Video processed: ${row.video_name}`);
+                log(`Video processed: ${row.video_name} (${isUpdate ? 'updated' : 'new'})`);
             } catch (error) {
                 console.error(`Error processing video ${row.link}:`, error);
             }
@@ -724,7 +861,9 @@ class DatabaseAggregator {
                     (SELECT COUNT(*) FROM videos) as total_videos,
                     (SELECT COUNT(*) FROM pedestrians) as total_pedestrians,
                     (SELECT COUNT(*) FROM analytics_dimensions) as total_dimensions,
-                    (SELECT COUNT(*) FROM analytics_facts) as total_facts
+                    (SELECT COUNT(*) FROM analytics_facts) as total_facts,
+                    (SELECT COUNT(*) FROM import_batches) as total_import_batches,
+                    (SELECT MAX(import_date) FROM import_batches) as latest_import_date
             `);
             
             console.log('\n=== AGGREGATION SUMMARY ===');
@@ -733,6 +872,8 @@ class DatabaseAggregator {
             console.log(`Pedestrians: ${summary.rows[0].total_pedestrians}`);
             console.log(`Analytics Dimensions: ${summary.rows[0].total_dimensions}`);
             console.log(`Analytics Facts: ${summary.rows[0].total_facts}`);
+            console.log(`Import Batches: ${summary.rows[0].total_import_batches}`);
+            console.log(`Latest Import: ${summary.rows[0].latest_import_date || 'N/A'}`);
             console.log('===========================\n');
         } catch (error) {
             console.error('Error generating summary:', error);

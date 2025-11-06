@@ -221,6 +221,32 @@ db-add-mock-video-coordinates: ## Add mock coordinate data to videos
 		exit 1; \
 	fi
 
+db-migrate-temporal-tracking: ## Apply temporal data tracking migration
+	@echo "$(BLUE)Applying temporal data tracking migration...$(NC)"
+	@if [ -f .env.local ]; then \
+		export $$(grep -v '^#' .env.local | grep -v '^$$' | xargs) && \
+		psql $$DATABASE_URL -f scripts/migrate-add-temporal-tracking.sql; \
+		echo "$(GREEN)✓ Temporal tracking migration complete$(NC)"; \
+	else \
+		echo "$(RED)Error: .env.local file not found$(NC)"; \
+		exit 1; \
+	fi
+
+db-add-mock-temporal-brooklyn: ## Add mock temporal data for Brooklyn (6 months)
+	@echo "$(BLUE)Adding mock temporal data for Brooklyn...$(NC)"
+	@echo "$(YELLOW)Note: Make sure you've run 'make db-migrate-temporal-tracking' first$(NC)"
+	@if [ -f .env.local ]; then \
+		node scripts/add-mock-temporal-data-brooklyn.js; \
+		echo "$(GREEN)✓ Mock temporal data for Brooklyn added$(NC)"; \
+		echo "$(BLUE)Refreshing views...$(NC)"; \
+		export $$(grep -v '^#' .env.local | grep -v '^$$' | xargs) && \
+		psql $$DATABASE_URL -c "REFRESH MATERIALIZED VIEW IF EXISTS mv_rank_crossing_speed;" 2>/dev/null || true; \
+		echo "$(GREEN)✓ Views refreshed$(NC)"; \
+	else \
+		echo "$(RED)Error: .env.local file not found$(NC)"; \
+		exit 1; \
+	fi
+
 # ===============================================
 # GEONAMES API INTEGRATION
 # ===============================================

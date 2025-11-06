@@ -43,6 +43,24 @@ CREATE TABLE cities (
     UNIQUE(city, country) -- Prevent duplicate cities
 );
 
+-- ===============================================
+-- TEMPORAL TRACKING TABLES (must be before videos)
+-- ===============================================
+
+-- Import batches table - tracks each data import run
+-- Created before videos table because videos references it
+CREATE TABLE import_batches (
+    id SERIAL PRIMARY KEY,
+    import_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    description TEXT,
+    file_count INTEGER,
+    record_count INTEGER,
+    metadata JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_import_batches_date ON import_batches(import_date DESC);
+
 -- Videos table - video analysis data
 CREATE TABLE videos (
     id SERIAL PRIMARY KEY,
@@ -86,6 +104,11 @@ CREATE TABLE videos (
     -- Geographic coordinates (optional - if null, use city coordinates)
     latitude DECIMAL(10, 8),
     longitude DECIMAL(11, 8),
+    -- Temporal tracking (for historical data analysis)
+    data_collected_date DATE, -- When data was originally collected
+    import_batch_id INTEGER REFERENCES import_batches(id), -- Which import batch added this data
+    first_imported_at TIMESTAMP, -- First time this video was imported
+    last_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Last time this video was updated
     -- Metadata
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -175,6 +198,29 @@ CREATE TABLE pedestrians (
 );
 
 -- ===============================================
+-- TEMPORAL TRACKING TABLES (continued)
+-- ===============================================
+
+-- Video update history - tracks when videos were updated (optional)
+-- Created after videos table because it references videos
+CREATE TABLE video_update_history (
+    id SERIAL PRIMARY KEY,
+    video_id INTEGER REFERENCES videos(id) ON DELETE CASCADE,
+    import_batch_id INTEGER REFERENCES import_batches(id),
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Store key metrics that changed
+    risky_crossing_ratio DECIMAL(5, 4),
+    run_red_light_ratio DECIMAL(5, 4),
+    crosswalk_usage_ratio DECIMAL(5, 4),
+    total_pedestrians INTEGER,
+    -- Store full snapshot as JSONB for flexibility
+    metrics_snapshot JSONB
+);
+
+CREATE INDEX idx_video_history_video ON video_update_history(video_id, updated_at);
+CREATE INDEX idx_video_history_batch ON video_update_history(import_batch_id);
+
+-- ===============================================
 -- ANALYTICS TABLES
 -- ===============================================
 
@@ -222,6 +268,8 @@ CREATE INDEX idx_videos_city_id ON videos(city_id);
 CREATE INDEX idx_videos_link ON videos(link);
 CREATE INDEX idx_videos_weather ON videos(main_weather);
 CREATE INDEX idx_videos_geographic ON videos(latitude, longitude);
+CREATE INDEX idx_videos_temporal ON videos(data_collected_date, import_batch_id);
+CREATE INDEX idx_videos_first_imported ON videos(first_imported_at);
 
 -- Pedestrians indexes
 CREATE INDEX idx_pedestrians_video_id ON pedestrians(video_id);
@@ -350,12 +398,18 @@ SELECT
     COALESCE(
         (AVG(v.risky_crossing_ratio) + AVG(v.run_red_light_ratio)) / 2, 
         COUNT(CASE WHEN p.risky_crossing THEN 1 END)::FLOAT / NULLIF(COUNT(p.id), 0)
-    ) as risk_intensity
+    ) as risk_intensity,
+    -- Temporal metadata (for reference, not filtering - shows data range)
+    MIN(v.data_collected_date) as earliest_data_date,
+    MAX(v.data_collected_date) as latest_data_date,
+    MIN(v.first_imported_at) as earliest_import_date,
+    MAX(v.last_updated_at) as latest_update_date,
+    COUNT(DISTINCT v.import_batch_id) as import_batch_count
 FROM cities c
 LEFT JOIN videos v ON c.id = v.city_id
 LEFT JOIN pedestrians p ON v.id = p.video_id
 GROUP BY c.id, c.city, c.country, c.continent, c.latitude, c.longitude, 
-         c.population_city, c.traffic_mortality, c.literacy_rate, c.gini;
+         c.population_city, c.traffic_mortality, c.literacy_rate, c.gini, c.insights;
 
 -- v_video_summary: Video-level drilldowns
 CREATE OR REPLACE VIEW v_video_summary AS
@@ -903,3 +957,245 @@ CREATE TRIGGER update_pedestrians_updated_at BEFORE UPDATE ON pedestrians
 
 CREATE TRIGGER update_analytics_facts_updated_at BEFORE UPDATE ON analytics_facts
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- ===============================================
+-- TEMPORAL DATA FUNCTIONS
+-- ===============================================
+
+-- Function to get city summary at a specific point in time
+CREATE OR REPLACE FUNCTION v_city_summary_at_date(target_date DATE DEFAULT CURRENT_DATE)
+RETURNS TABLE (
+    id INTEGER,
+    city VARCHAR,
+    country VARCHAR,
+    continent VARCHAR,
+    latitude DECIMAL,
+    longitude DECIMAL,
+    population_city BIGINT,
+    traffic_mortality DECIMAL,
+    literacy_rate DECIMAL,
+    gini DECIMAL,
+    insights JSONB,
+    total_videos BIGINT,
+    total_pedestrians BIGINT,
+    avg_video_duration DECIMAL,
+    avg_pedestrians_per_video DECIMAL,
+    avg_risky_crossing_ratio DECIMAL,
+    avg_run_red_light_ratio DECIMAL,
+    avg_crosswalk_usage_ratio DECIMAL,
+    avg_pedestrian_age DECIMAL,
+    avg_crossing_speed DECIMAL,
+    avg_crossing_time DECIMAL,
+    avg_phone_usage_ratio DECIMAL,
+    avg_road_width DECIMAL,
+    risky_crossing_rate DECIMAL,
+    run_red_light_rate DECIMAL,
+    crosswalk_usage_rate DECIMAL,
+    phone_usage_rate DECIMAL,
+    risk_intensity DECIMAL,
+    data_as_of_date DATE
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT 
+        c.id,
+        c.city,
+        c.country,
+        c.continent,
+        c.latitude,
+        c.longitude,
+        c.population_city,
+        c.traffic_mortality,
+        c.literacy_rate,
+        c.gini,
+        c.insights,
+        COUNT(DISTINCT v.id) FILTER (
+            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
+              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
+        ) as total_videos,
+        COUNT(DISTINCT p.id) FILTER (
+            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
+              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
+        ) as total_pedestrians,
+        AVG(v.duration_seconds) FILTER (
+            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
+              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
+        ) as avg_video_duration,
+        AVG(v.total_pedestrians) FILTER (
+            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
+              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
+        ) as avg_pedestrians_per_video,
+        AVG(v.risky_crossing_ratio) FILTER (
+            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
+              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
+        ) as avg_risky_crossing_ratio,
+        AVG(v.run_red_light_ratio) FILTER (
+            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
+              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
+        ) as avg_run_red_light_ratio,
+        AVG(v.crosswalk_usage_ratio) FILTER (
+            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
+              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
+        ) as avg_crosswalk_usage_ratio,
+        AVG(p.age) FILTER (
+            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
+              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
+        ) as avg_pedestrian_age,
+        AVG(v.crossing_speed) FILTER (
+            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
+              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
+        )::DECIMAL as avg_crossing_speed,
+        AVG(v.crossing_time) FILTER (
+            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
+              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
+        )::DECIMAL as avg_crossing_time,
+        AVG(v.phone_usage_ratio) FILTER (
+            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
+              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
+        ) as avg_phone_usage_ratio,
+        AVG(v.avg_road_width) FILTER (
+            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
+              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
+        ) as avg_road_width,
+        COUNT(CASE WHEN p.risky_crossing THEN 1 END) FILTER (
+            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
+              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
+        )::FLOAT / NULLIF(
+            COUNT(p.id) FILTER (
+                WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
+                  AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
+            ), 0
+        ) as risky_crossing_rate,
+        COUNT(CASE WHEN p.run_red_light THEN 1 END) FILTER (
+            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
+              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
+        )::FLOAT / NULLIF(
+            COUNT(p.id) FILTER (
+                WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
+                  AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
+            ), 0
+        ) as run_red_light_rate,
+        COUNT(CASE WHEN p.crosswalk_use_or_not THEN 1 END) FILTER (
+            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
+              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
+        )::FLOAT / NULLIF(
+            COUNT(p.id) FILTER (
+                WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
+                  AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
+            ), 0
+        ) as crosswalk_usage_rate,
+        COUNT(CASE WHEN p.phone_using THEN 1 END) FILTER (
+            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
+              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
+        )::FLOAT / NULLIF(
+            COUNT(p.id) FILTER (
+                WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
+                  AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
+            ), 0
+        ) as phone_usage_rate,
+        COALESCE(
+            (AVG(v.risky_crossing_ratio) FILTER (
+                WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
+                  AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
+            ) + AVG(v.run_red_light_ratio) FILTER (
+                WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
+                  AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
+            )) / 2,
+            COUNT(CASE WHEN p.risky_crossing THEN 1 END) FILTER (
+                WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
+                  AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
+            )::FLOAT / NULLIF(
+                COUNT(p.id) FILTER (
+                    WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
+                      AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
+                ), 0
+            )
+        ) as risk_intensity,
+        target_date as data_as_of_date
+    FROM cities c
+    LEFT JOIN videos v ON c.id = v.city_id
+        AND (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
+        AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
+    LEFT JOIN pedestrians p ON v.id = p.video_id
+    GROUP BY c.id, c.city, c.country, c.continent, c.latitude, c.longitude, 
+             c.population_city, c.traffic_mortality, c.literacy_rate, c.gini, c.insights;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Function to compare current data with historical data
+CREATE OR REPLACE FUNCTION compare_city_data_current_vs_date(
+    target_date DATE,
+    city_name_param VARCHAR DEFAULT NULL
+)
+RETURNS TABLE (
+    city VARCHAR,
+    country VARCHAR,
+    current_total_videos BIGINT,
+    current_avg_risky_crossing DECIMAL,
+    current_avg_crossing_speed DECIMAL,
+    current_risky_crossing_rate DECIMAL,
+    historical_total_videos BIGINT,
+    historical_avg_risky_crossing DECIMAL,
+    historical_avg_crossing_speed DECIMAL,
+    historical_risky_crossing_rate DECIMAL,
+    video_count_change BIGINT,
+    risky_crossing_change DECIMAL,
+    crossing_speed_change DECIMAL,
+    change_period_days INTEGER
+) AS $$
+BEGIN
+    RETURN QUERY
+    WITH current_data AS (
+        SELECT * FROM v_city_summary
+        WHERE (city_name_param IS NULL OR city = city_name_param)
+    ),
+    historical_data AS (
+        SELECT * FROM v_city_summary_at_date(target_date)
+        WHERE (city_name_param IS NULL OR city = city_name_param)
+    )
+    SELECT 
+        COALESCE(c.city, h.city) as city,
+        COALESCE(c.country, h.country) as country,
+        c.total_videos as current_total_videos,
+        c.avg_risky_crossing_ratio as current_avg_risky_crossing,
+        c.avg_crossing_speed as current_avg_crossing_speed,
+        c.risky_crossing_rate as current_risky_crossing_rate,
+        h.total_videos as historical_total_videos,
+        h.avg_risky_crossing_ratio as historical_avg_risky_crossing,
+        h.avg_crossing_speed as historical_avg_crossing_speed,
+        h.risky_crossing_rate as historical_risky_crossing_rate,
+        (c.total_videos - COALESCE(h.total_videos, 0)) as video_count_change,
+        (c.avg_risky_crossing_ratio - COALESCE(h.avg_risky_crossing_ratio, 0)) as risky_crossing_change,
+        (c.avg_crossing_speed - COALESCE(h.avg_crossing_speed, 0)) as crossing_speed_change,
+        (CURRENT_DATE - target_date) as change_period_days
+    FROM current_data c
+    FULL OUTER JOIN historical_data h ON c.city = h.city AND c.country = h.country;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Function to get import batch statistics
+CREATE OR REPLACE FUNCTION get_import_batch_stats()
+RETURNS TABLE (
+    batch_id INTEGER,
+    import_date TIMESTAMP,
+    description TEXT,
+    video_count BIGINT,
+    city_count BIGINT,
+    pedestrian_count BIGINT
+) AS $$
+BEGIN
+    RETURN QUERY
+    SELECT 
+        ib.id,
+        ib.import_date,
+        ib.description,
+        COUNT(DISTINCT v.id) as video_count,
+        COUNT(DISTINCT v.city_id) as city_count,
+        COUNT(DISTINCT p.id) as pedestrian_count
+    FROM import_batches ib
+    LEFT JOIN videos v ON ib.id = v.import_batch_id
+    LEFT JOIN pedestrians p ON v.id = p.video_id
+    GROUP BY ib.id, ib.import_date, ib.description
+    ORDER BY ib.import_date DESC;
+END;
+$$ LANGUAGE plpgsql;

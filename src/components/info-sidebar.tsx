@@ -19,7 +19,8 @@ import {
   Zap,
   Shield,
   Car as CarIcon,
-  Gauge
+  Gauge,
+  LineChart
 } from "lucide-react"
 import { useState, useEffect } from "react"
 
@@ -29,6 +30,23 @@ import { ListItem } from "@/components/ui/list-item"
 import { Button } from "@/components/ui/button"
 import { useFilter } from "@/contexts/FilterContext"
 import { CityInsight } from "@/types/database"
+import {
+  Drawer,
+  DrawerClose,
+  DrawerContent,
+  DrawerDescription,
+  DrawerFooter,
+  DrawerHeader,
+  DrawerTitle,
+  DrawerTrigger,
+} from "@/components/ui/drawer"
+import { Area, AreaChart, CartesianGrid, XAxis } from "recharts"
+import {
+  ChartConfig,
+  ChartContainer,
+  ChartTooltip,
+  ChartTooltipContent,
+} from "@/components/ui/chart"
 
 interface TopInsight {
   city: string;
@@ -85,6 +103,24 @@ interface MetricRelationship {
   description: string;
 }
 
+interface TemporalMetricData {
+  metric: {
+    key: string;
+    name: string;
+    unit: string;
+  };
+  chartData: Array<{
+    date: string;
+    value: number;
+    fullDate: string;
+  }>;
+  dateRange: {
+    start: string;
+    end: string;
+    months: number;
+  };
+}
+
 export function InfoSidebar() {
   const { filteredCityData, selectedCity, setSelectedCity, cityData, selectedMetrics, granularFilters } = useFilter()
   const [topInsights, setTopInsights] = useState<TopInsight[]>([])
@@ -93,6 +129,10 @@ export function InfoSidebar() {
   const [metricRelationships, setMetricRelationships] = useState<MetricRelationship[]>([])
   const [loading, setLoading] = useState(false)
   const [metricLoading, setMetricLoading] = useState(false)
+  const [temporalData, setTemporalData] = useState<TemporalMetricData | null>(null)
+  const [selectedMetricForChart, setSelectedMetricForChart] = useState<string | null>(null)
+  const [temporalLoading, setTemporalLoading] = useState(false)
+  const [drawerOpen, setDrawerOpen] = useState(false)
 
   // Debug logging to see what's happening
   useEffect(() => {
@@ -173,6 +213,43 @@ export function InfoSidebar() {
       console.error('Error fetching metric relationships:', error)
       setMetricRelationships([])
     }
+  }
+
+  const fetchTemporalData = async (metric: string, city: string) => {
+    setTemporalLoading(true)
+    try {
+      // Map metric display names to API keys
+      const metricMap: { [key: string]: string } = {
+        'Crossing Speed': 'crossing-speed',
+        'Time to Start': 'crossing-time',
+        'Risky Crossing': 'risky-crossing',
+        'Red Light Rate': 'red-light',
+        'Crosswalk Usage': 'crosswalk-usage'
+      }
+
+      const metricKey = metricMap[metric] || metric.toLowerCase().replace(/\s+/g, '-')
+      const response = await fetch(
+        `/api/cities/${encodeURIComponent(city)}/metrics/${metricKey}/temporal?months=6`
+      )
+      const result = await response.json()
+      if (result.success) {
+        setTemporalData(result.data)
+      } else {
+        setTemporalData(null)
+      }
+    } catch (error) {
+      console.error('Error fetching temporal data:', error)
+      setTemporalData(null)
+    } finally {
+      setTemporalLoading(false)
+    }
+  }
+
+  const handleMetricCardClick = (metricName: string) => {
+    if (!selectedCity) return
+    setSelectedMetricForChart(metricName)
+    setDrawerOpen(true)
+    fetchTemporalData(metricName, selectedCity)
   }
 
   const formatNumber = (value: string | number | null | undefined, decimals: number = 2): string => {
@@ -791,61 +868,178 @@ export function InfoSidebar() {
 
           {/* KPI Strip */}
           <div className="grid grid-cols-2 gap-3">
-            <Card>
+            <Card 
+              className="cursor-pointer hover:bg-muted/50 transition-colors"
+              onClick={() => handleMetricCardClick('Crossing Speed')}
+            >
               <CardContent className="p-3">
-                <div className="flex items-center gap-2 mb-1">
-                  <Gauge className="w-4 h-4 text-blue-600" />
-                  <span className="text-xs font-medium">Crossing Speed</span>
+                <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center gap-2">
+                    <Gauge className="w-4 h-4 text-blue-600" />
+                    <span className="text-xs font-medium">Crossing Speed</span>
+                  </div>
+                  <LineChart className="w-4 h-4 text-muted-foreground" />
                 </div>
-                <div className="text-lg font-bold">1.86 m/s</div>
+                <div className="text-lg font-bold">{formatNumber(filteredCityData.avg_crossing_speed, 2)} m/s</div>
                 <div className="text-xs text-green-600">+12% vs global</div>
               </CardContent>
             </Card>
 
-            <Card>
+            <Card 
+              className="cursor-pointer hover:bg-muted/50 transition-colors"
+              onClick={() => handleMetricCardClick('Time to Start')}
+            >
               <CardContent className="p-3">
-                <div className="flex items-center gap-2 mb-1">
-                  <Clock className="w-4 h-4 text-purple-600" />
-                  <span className="text-xs font-medium">Time to Start</span>
+                <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center gap-2">
+                    <Clock className="w-4 h-4 text-purple-600" />
+                    <span className="text-xs font-medium">Time to Start</span>
+                  </div>
+                  <LineChart className="w-4 h-4 text-muted-foreground" />
                 </div>
-                <div className="text-lg font-bold">2.3s</div>
+                <div className="text-lg font-bold">{formatNumber(filteredCityData.avg_crossing_time, 1)}s</div>
                 <div className="text-xs text-red-600">-8% vs global</div>
               </CardContent>
             </Card>
 
-            <Card>
+            <Card 
+              className="cursor-pointer hover:bg-muted/50 transition-colors"
+              onClick={() => handleMetricCardClick('Risky Crossing')}
+            >
               <CardContent className="p-3">
-                <div className="flex items-center gap-2 mb-1">
-                  <AlertTriangle className="w-4 h-4 text-orange-600" />
-                  <span className="text-xs font-medium">Risky Crossing</span>
+                <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-orange-600" />
+                    <span className="text-xs font-medium">Risky Crossing</span>
+                  </div>
+                  <LineChart className="w-4 h-4 text-muted-foreground" />
                 </div>
                 <div className="text-lg font-bold">{formatNumber(filteredCityData.risky_crossing_rate, 1)}%</div>
                 <div className="text-xs text-green-600">-5% vs global</div>
               </CardContent>
             </Card>
 
-            <Card>
+            <Card 
+              className="cursor-pointer hover:bg-muted/50 transition-colors"
+              onClick={() => handleMetricCardClick('Red Light Rate')}
+            >
               <CardContent className="p-3">
-                <div className="flex items-center gap-2 mb-1">
-                  <Zap className="w-4 h-4 text-red-600" />
-                  <span className="text-xs font-medium">Red Light Rate</span>
+                <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center gap-2">
+                    <Zap className="w-4 h-4 text-red-600" />
+                    <span className="text-xs font-medium">Red Light Rate</span>
+                  </div>
+                  <LineChart className="w-4 h-4 text-muted-foreground" />
                 </div>
                 <div className="text-lg font-bold">{formatNumber(filteredCityData.run_red_light_rate, 1)}%</div>
                 <div className="text-xs text-red-600">+15% vs global</div>
               </CardContent>
             </Card>
 
-            <Card className="col-span-2">
+            <Card 
+              className="col-span-2 cursor-pointer hover:bg-muted/50 transition-colors"
+              onClick={() => handleMetricCardClick('Crosswalk Usage')}
+            >
               <CardContent className="p-3">
-                <div className="flex items-center gap-2 mb-1">
-                  <Shield className="w-4 h-4 text-green-600" />
-                  <span className="text-xs font-medium">Crosswalk Usage</span>
+                <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center gap-2">
+                    <Shield className="w-4 h-4 text-green-600" />
+                    <span className="text-xs font-medium">Crosswalk Usage</span>
+                  </div>
+                  <LineChart className="w-4 h-4 text-muted-foreground" />
                 </div>
                 <div className="text-lg font-bold">{formatNumber(filteredCityData.crosswalk_usage_rate, 1)}%</div>
                 <div className="text-xs text-green-600">+8% vs global</div>
               </CardContent>
             </Card>
           </div>
+
+          {/* Temporal Data Drawer */}
+          <Drawer open={drawerOpen} onOpenChange={setDrawerOpen}>
+            <DrawerContent className="max-h-[85vh]">
+              <DrawerHeader className="text-center sm:text-center">
+                <DrawerTitle className="text-center">
+                  {selectedMetricForChart && temporalData ? temporalData.metric.name : selectedMetricForChart || 'Metric History'}
+                </DrawerTitle>
+                <DrawerDescription className="text-center">
+                  {selectedCity && temporalData 
+                    ? `Historical data for ${selectedCity} over the last ${temporalData.dateRange.months} months`
+                    : 'Loading temporal data...'}
+                </DrawerDescription>
+              </DrawerHeader>
+              <div className="px-4 pb-4 overflow-y-auto">
+                {temporalLoading ? (
+                  <div className="flex items-center justify-center h-64">
+                    <div className="text-sm text-muted-foreground">Loading chart data...</div>
+                  </div>
+                ) : temporalData && temporalData.chartData.length > 0 ? (
+                  <div className="space-y-4">
+                    <ChartContainer
+                      config={{
+                        value: {
+                          label: temporalData.metric.name,
+                          color: "hsl(var(--chart-1))",
+                        },
+                      }}
+                      className="h-[300px] w-full"
+                    >
+                      <AreaChart
+                        accessibilityLayer
+                        data={temporalData.chartData}
+                        margin={{
+                          left: 12,
+                          right: 12,
+                          top: 12,
+                          bottom: 12,
+                        }}
+                      >
+                        <CartesianGrid vertical={false} />
+                        <XAxis
+                          dataKey="date"
+                          tickLine={false}
+                          axisLine={false}
+                          tickMargin={8}
+                          tickFormatter={(value) => value}
+                        />
+                        <ChartTooltip
+                          cursor={false}
+                          content={<ChartTooltipContent indicator="line" />}
+                        />
+                        <Area
+                          dataKey="value"
+                          type="natural"
+                          fill="var(--color-value)"
+                          fillOpacity={0.4}
+                          stroke="var(--color-value)"
+                          strokeWidth={2}
+                        />
+                      </AreaChart>
+                    </ChartContainer>
+                    <div className="text-sm text-muted-foreground text-center">
+                      <div className="font-medium mb-1">
+                        {temporalData.metric.name}: {temporalData.chartData[temporalData.chartData.length - 1]?.value.toFixed(2)} {temporalData.metric.unit}
+                      </div>
+                      <div>
+                        {new Date(temporalData.dateRange.start).toLocaleDateString()} - {new Date(temporalData.dateRange.end).toLocaleDateString()}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-center h-64">
+                    <div className="text-sm text-muted-foreground text-center">
+                      <p>No temporal data available for this metric.</p>
+                      <p className="text-xs mt-2">Historical data tracking may not be enabled or data is insufficient.</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+              <DrawerFooter>
+                <DrawerClose asChild>
+                  <Button variant="outline">Close</Button>
+                </DrawerClose>
+              </DrawerFooter>
+            </DrawerContent>
+          </Drawer>
 
           {/* Top Insights */}
           {filteredCityData.insights && filteredCityData.insights.filter((i: CityInsight) => i.category !== 'meta').length > 0 && (

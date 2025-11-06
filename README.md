@@ -782,7 +782,7 @@ Each city has realistic pedestrian crossing metrics based on urban planning rese
 
 The video coordinate system allows individual videos to have their own geographic coordinates, separate from city-level coordinates. This enables precise visualization of video locations on the globe when a city is selected.
 
-#### Implementation
+**Implementation**
 
 The feature was implemented with the following components:
 
@@ -828,12 +828,56 @@ The feature was implemented with the following components:
 - The system gracefully handles missing coordinates by falling back to city coordinates
 - Video markers are automatically cleared when no city is selected
 
-**Extending the Feature:**
-
-- **Real Coordinate Data**: Replace mock data with actual GPS coordinates from video metadata
-- **Video Clustering**: Implement marker clustering for cities with many videos
-- **Video Selection**: Add click handlers to select and display video details
-- **Coordinate Validation**: Add validation to ensure coordinates are within city boundaries
-- **Batch Import**: Create scripts to import coordinates from external data sources
-
 For detailed setup instructions, see [VIDEO_COORDINATES_SETUP.md](./VIDEO_COORDINATES_SETUP.md).
+
+### Historical Data Tracking
+
+The historical data tracking system enables temporal analysis while maintaining cumulative aggregation for general views. This allows you to view data as it existed at specific points in time, compare current vs historical metrics, and track how data changes over multiple import cycles.
+
+**Implementation**
+
+The feature was implemented with the following components:
+
+1. **Database Schema**: Added temporal tracking columns to the `videos` table (`data_collected_date`, `import_batch_id`, `first_imported_at`, `last_updated_at`) and created `import_batches` and `video_update_history` tables to track data import runs.
+
+2. **Migration Script**: Created `scripts/migrate-add-temporal-tracking.sql` to add temporal columns, create tracking tables, and migrate existing data.
+
+3. **Temporal Functions**: Created `v_city_summary_at_date()` function to query data at specific points in time and `compare_city_data_current_vs_date()` for historical comparisons.
+
+4. **API Updates**: Enhanced `/api/cities` endpoint to support optional `date` parameter for temporal queries and created `/api/cities/compare` endpoint for comparisons.
+
+5. **Aggregation Script**: Updated `scripts/aggregate-csv-data.js` to automatically create import batches and track temporal metadata for each data import.
+
+6. **UI Visualization**: Added temporal data visualization with area charts in a drawer component, accessible by clicking on metric cards in the city view.
+
+**How It Works:**
+
+- **Cumulative by Default**: General views (like `v_city_summary`) aggregate ALL data from all time periods, ensuring no breaking changes to existing functionality.
+
+- **Temporal on Demand**: When a date parameter is provided, the system filters data to show only what existed at that point in time, enabling historical analysis and trend tracking.
+
+- **Import Tracking**: Each data import creates an import batch record, allowing you to track which data came from which import run and when it was added.
+
+- **Video Updates**: When the same video is imported again (same link), the system updates the existing record but preserves `first_imported_at` to maintain historical accuracy.
+
+- **Future Data**: When new data is added in the future (e.g., 6 months from now), the system automatically:
+  - Creates a new import batch for the new data
+  - Tags new videos with the import batch ID and collection date
+  - Updates existing videos while preserving their first import date
+  - Maintains full historical context for temporal queries
+
+**Usage:**
+
+- **View Historical Data**: Click on any metric card (Crossing Speed, Time to Start, Risky Crossing, etc.) in the city view to see an area chart showing trends over the last 6 months.
+
+- **Temporal API Queries**: Use the `date` parameter in API calls to query data at specific points in time:
+  ```bash
+  GET /api/cities?date=2024-01-01
+  ```
+
+- **Comparisons**: Use the comparison endpoint to see how metrics have changed over time:
+  ```bash
+  GET /api/cities/compare?date=2024-01-01&city=Barcelona
+  ```
+
+For detailed implementation information, see [HISTORICAL_DATA_IMPLEMENTATION.md](./HISTORICAL_DATA_IMPLEMENTATION.md).
