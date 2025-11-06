@@ -115,14 +115,20 @@ function createRadialGradientCanvas(color: any): HTMLCanvasElement {
   
   if (!ctx) return canvas;
   
+  // Extract RGBA values from Cesium.Color with validation
+  const red = color?.red ?? 0;
+  const green = color?.green ?? 0;
+  const blue = color?.blue ?? 0;
+  const alpha = color?.alpha ?? 0.5;
+  
+  // Validate and clamp values to prevent NaN
+  const r = Math.floor(Math.max(0, Math.min(255, (isNaN(red) ? 0 : red) * 255)));
+  const g = Math.floor(Math.max(0, Math.min(255, (isNaN(green) ? 0 : green) * 255)));
+  const b = Math.floor(Math.max(0, Math.min(255, (isNaN(blue) ? 0 : blue) * 255)));
+  const a = Math.max(0, Math.min(1, isNaN(alpha) ? 0.5 : alpha));
+  
   // Create radial gradient from center to edge
   const gradient = ctx.createRadialGradient(128, 128, 0, 128, 128, 128);
-  
-  // Extract RGBA values from Cesium.Color
-  const r = Math.floor(color.red * 255);
-  const g = Math.floor(color.green * 255);
-  const b = Math.floor(color.blue * 255);
-  const a = color.alpha;
   
   // Center: full opacity
   gradient.addColorStop(0, `rgba(${r}, ${g}, ${b}, ${a})`);
@@ -304,7 +310,7 @@ export default function Globe() {
     maxValue: number,
     Cesium: typeof import('cesium')
   ): Cesium.Color => {
-    if (value === null) {
+    if (value === null || isNaN(value)) {
       return Cesium.Color.GRAY.withAlpha(0.3);
     }
 
@@ -313,8 +319,15 @@ export default function Globe() {
       return Cesium.Color.BLUE.withAlpha(0.6);
     }
 
+    // Validate min/max values to prevent division by zero
+    if (isNaN(minValue) || isNaN(maxValue) || minValue === maxValue) {
+      // If all values are the same, use the middle color
+      const midColor = config.colorScale.min;
+      return new Cesium.Color(midColor[0], midColor[1], midColor[2], midColor[3]);
+    }
+
     // Normalize value to 0-1 range
-    const normalizedValue = (value - minValue) / (maxValue - minValue);
+    const normalizedValue = Math.max(0, Math.min(1, (value - minValue) / (maxValue - minValue)));
     
     // Interpolate between min and max colors
     const minColor = config.colorScale.min;
@@ -325,7 +338,13 @@ export default function Globe() {
     const b = minColor[2] + (maxColor[2] - minColor[2]) * normalizedValue;
     const a = minColor[3] + (maxColor[3] - minColor[3]) * normalizedValue;
     
-    return new Cesium.Color(r, g, b, a);
+    // Validate final color values
+    const finalR = isNaN(r) ? minColor[0] : Math.max(0, Math.min(1, r));
+    const finalG = isNaN(g) ? minColor[1] : Math.max(0, Math.min(1, g));
+    const finalB = isNaN(b) ? minColor[2] : Math.max(0, Math.min(1, b));
+    const finalA = isNaN(a) ? minColor[3] : Math.max(0, Math.min(1, a));
+    
+    return new Cesium.Color(finalR, finalG, finalB, finalA);
   }, []);
 
   // Create heatmap visualization
@@ -783,7 +802,7 @@ export default function Globe() {
     };
   }, []);
 
-  // Handle metric selection changes
+  // Handle metric selection and filter changes
   useEffect(() => {
     if (!viewerRef.current || selectedMetrics.length === 0) {
       // Clear heatmap if no metrics selected
@@ -794,17 +813,22 @@ export default function Globe() {
       return;
     }
 
-    const updateHeatmap = async () => {
-      const data = await fetchGlobalData();
-      const Cesium = await import('cesium');
-      
-      // Use the first selected metric for heatmap
-      const metricType = selectedMetrics[0];
-      await createHeatmap(data, metricType, Cesium, setSelectedCity);
-    };
+    // Debounce updates to prevent flickering when filters change rapidly
+    const timeoutId = setTimeout(async () => {
+      try {
+        const data = await fetchGlobalData();
+        const Cesium = await import('cesium');
+        
+        // Use the first selected metric for heatmap
+        const metricType = selectedMetrics[0];
+        await createHeatmap(data, metricType, Cesium, setSelectedCity);
+      } catch (error) {
+        console.error('Error updating heatmap:', error);
+      }
+    }, 300); // 300ms debounce
 
-    updateHeatmap();
-  }, [selectedMetrics, createHeatmap, fetchGlobalData, setSelectedCity]);
+    return () => clearTimeout(timeoutId);
+  }, [selectedMetrics, granularFilters, createHeatmap, fetchGlobalData, setSelectedCity]);
 
   // Handle city selection changes
   useEffect(() => {
