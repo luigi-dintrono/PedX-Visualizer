@@ -297,6 +297,8 @@ Cross-dimensional analysis (e.g., gender vs age comparisons).
 
 The PedX Visualizer includes an advanced **City Insights** generation system that automatically creates templated, data-driven insights for each city based on statistical analysis and relevance scoring.
 
+> 📖 **For detailed implementation information, see [INSIGHTS_IMPLEMENTATION.md](./INSIGHTS_IMPLEMENTATION.md)**
+
 ### Overview
 
 The insights system analyzes city-specific data against global baselines to generate meaningful, contextual insights. Each city receives between 3-10 insights, prioritized by relevance and statistical significance.
@@ -542,6 +544,12 @@ This ensures insights are always based on the latest data.
 - `GET /api/insights/metrics` - Get metric insights
 - Query parameters: `type` (metric_type), `limit`
 
+### Metric Mode
+
+The application includes a comprehensive **Metric Mode** feature that provides detailed analysis when a behavior metric is selected. This mode displays city rankings, correlations, and relationships for metrics like risky crossing rate, crosswalk usage, and more.
+
+> 📖 **For detailed Metric Mode implementation, see [METRIC_MODE_IMPLEMENTATION.md](./METRIC_MODE_IMPLEMENTATION.md)**
+
 ### Raw Data API
 - `GET /api/data` - Get raw crossing data
 - `POST /api/data` - Insert new crossing data
@@ -549,6 +557,8 @@ This ensures insights are always based on the latest data.
 ## CSV Data Aggregation
 
 The system supports aggregating CSV data from the `summary_data` folder into structured database tables.
+
+> 📖 **For detailed aggregation documentation, see [AGGREGATION_README.md](./AGGREGATION_README.md)**
 
 ### Supported CSV Files
 
