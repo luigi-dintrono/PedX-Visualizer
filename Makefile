@@ -200,6 +200,27 @@ db-migrate-insights: ## Apply insights migration to existing database
 		exit 1; \
 	fi
 
+db-migrate-video-coordinates: ## Apply video coordinates migration to existing database
+	@echo "$(BLUE)Applying video coordinates migration...$(NC)"
+	@if [ -f .env.local ]; then \
+		export $$(grep -v '^#' .env.local | grep -v '^$$' | xargs) && \
+		psql $$DATABASE_URL -f scripts/migrate-add-video-coordinates.sql; \
+		echo "$(GREEN)✓ Video coordinates migration complete$(NC)"; \
+	else \
+		echo "$(RED)Error: .env.local file not found$(NC)"; \
+		exit 1; \
+	fi
+
+db-add-mock-video-coordinates: ## Add mock coordinate data to videos
+	@echo "$(BLUE)Adding mock video coordinates...$(NC)"
+	@if [ -f .env.local ]; then \
+		node scripts/add-mock-video-coordinates.js; \
+		echo "$(GREEN)✓ Mock video coordinates added$(NC)"; \
+	else \
+		echo "$(RED)Error: .env.local file not found$(NC)"; \
+		exit 1; \
+	fi
+
 # ===============================================
 # GEONAMES API INTEGRATION
 # ===============================================

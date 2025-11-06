@@ -16,8 +16,12 @@ export async function GET(
         v.link,
         v.duration_seconds,
         v.total_pedestrians,
+        v.latitude,
+        v.longitude,
         c.city,
-        c.country
+        c.country,
+        c.latitude as city_latitude,
+        c.longitude as city_longitude
       FROM videos v
       JOIN cities c ON v.city_id = c.id
       WHERE c.city = $1
@@ -27,10 +31,19 @@ export async function GET(
 
     const result = await pool.query(query, [city, limit]);
     
+    // Convert decimal/numeric types to numbers for JSON response
+    const videos = result.rows.map(row => ({
+      ...row,
+      latitude: row.latitude ? parseFloat(row.latitude) : null,
+      longitude: row.longitude ? parseFloat(row.longitude) : null,
+      city_latitude: row.city_latitude ? parseFloat(row.city_latitude) : null,
+      city_longitude: row.city_longitude ? parseFloat(row.city_longitude) : null,
+    }));
+    
     return NextResponse.json({
       success: true,
-      data: result.rows,
-      count: result.rows.length
+      data: videos,
+      count: videos.length
     });
   } catch (error) {
     console.error('Error fetching city videos:', error);

@@ -171,10 +171,47 @@ function createDotCanvas(color: any): HTMLCanvasElement {
   return canvas;
 }
 
+// Helper for video dot - smaller and different style (square with border)
+function createVideoDotCanvas(): HTMLCanvasElement {
+  const size = 16;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return canvas;
+
+  // Outer border (blue)
+  ctx.fillStyle = '#3b82f6';
+  ctx.fillRect(0, 0, size, size);
+
+  // Inner square (white)
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(2, 2, size - 4, size - 4);
+
+  // Center dot (blue)
+  ctx.fillStyle = '#3b82f6';
+  ctx.beginPath();
+  ctx.arc(size / 2, size / 2, 3, 0, Math.PI * 2);
+  ctx.fill();
+
+  return canvas;
+}
+
+interface VideoData {
+  id: number;
+  video_name: string;
+  link: string;
+  latitude: number | null;
+  longitude: number | null;
+  city_latitude: number | null;
+  city_longitude: number | null;
+}
+
 export default function Globe() {
   const cesiumContainer = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Cesium.Viewer | null>(null);
   const dataSourceRef = useRef<Cesium.DataSource | null>(null);
+  const videoDataSourceRef = useRef<Cesium.DataSource | null>(null);
   
   const {
     selectedCity,
@@ -184,6 +221,28 @@ export default function Globe() {
     cityData,
     setSelectedCity,
   } = useFilter();
+
+  // Fetch videos for selected city
+  const fetchCityVideos = useCallback(async (cityName: string): Promise<VideoData[]> => {
+    try {
+      const response = await fetch(`/api/cities/${encodeURIComponent(cityName)}/videos?limit=100`);
+      const result = await response.json();
+      console.log(`[Globe] Fetched videos for ${cityName}:`, result);
+      if (result.success && result.data) {
+        const videosWithCoords = result.data.filter((v: VideoData) => {
+          const lat = v.latitude ?? v.city_latitude;
+          const lng = v.longitude ?? v.city_longitude;
+          return lat !== null && lng !== null && !isNaN(lat) && !isNaN(lng);
+        });
+        console.log(`[Globe] Videos with coordinates: ${videosWithCoords.length}/${result.data.length}`);
+        return result.data;
+      }
+      return [];
+    } catch (error) {
+      console.error('Error fetching city videos:', error);
+      return [];
+    }
+  }, []);
 
   // Fetch global data for heatmap with filters
   const fetchGlobalData = useCallback(async (): Promise<CityGlobeData[]> => {
@@ -480,14 +539,23 @@ export default function Globe() {
     handler.setInputAction((event: any) => {
       const pickedObject = viewer.scene.pick(event.endPosition);
       
-      // Hide all labels first
+      // Hide all city/heatmap labels first
       dataSource.entities.values.forEach(entity => {
         if (entity.label) {
           (entity.label.show as any) = false;
         }
       });
 
-      // Show label for hovered entity
+      // Hide all video labels
+      if (videoDataSourceRef.current) {
+        videoDataSourceRef.current.entities.values.forEach(entity => {
+          if (entity.label) {
+            (entity.label.show as any) = false;
+          }
+        });
+      }
+
+      // Show label for hovered entity (city or video)
       if (Cesium.defined(pickedObject) && pickedObject.id && pickedObject.id.label) {
         (pickedObject.id.label.show as any) = true;
       }
@@ -505,7 +573,120 @@ export default function Globe() {
       }
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
-  }, [getColorForMetric]);
+  }, [getColorForMetric, videoDataSourceRef]);
+
+  // Create video markers on globe
+  const createVideoMarkers = useCallback(async (
+    videos: VideoData[],
+    Cesium: typeof import('cesium')
+  ) => {
+    console.log('[Globe] createVideoMarkers called with', videos.length, 'videos');
+    
+    if (!viewerRef.current) {
+      console.warn('[Globe] Viewer not ready');
+      return;
+    }
+
+    if (!videos.length) {
+      console.log('[Globe] No videos provided, clearing markers');
+      // Remove existing video data source if no videos
+      if (videoDataSourceRef.current && viewerRef.current) {
+        viewerRef.current.dataSources.remove(videoDataSourceRef.current);
+        videoDataSourceRef.current = null;
+      }
+      return;
+    }
+
+    const viewer = viewerRef.current;
+
+    // Remove existing video data source
+    if (videoDataSourceRef.current) {
+      viewer.dataSources.remove(videoDataSourceRef.current);
+    }
+
+    // Create new data source for videos
+    const videoDataSource = new Cesium.CustomDataSource('videos');
+    videoDataSourceRef.current = videoDataSource;
+
+    // Filter videos that have coordinates (either video-specific or city fallback)
+    const videosWithCoords = videos.filter(video => {
+      const lat = video.latitude ?? video.city_latitude;
+      const lng = video.longitude ?? video.city_longitude;
+      const hasCoords = lat !== null && lng !== null && !isNaN(Number(lat)) && !isNaN(Number(lng));
+      if (!hasCoords) {
+        console.warn('[Globe] Video without coordinates:', video.video_name, { lat, lng, video_lat: video.latitude, video_lng: video.longitude, city_lat: video.city_latitude, city_lng: video.city_longitude });
+      }
+      return hasCoords;
+    });
+
+    console.log(`[Globe] Creating markers for ${videosWithCoords.length} videos with coordinates`);
+
+    if (videosWithCoords.length === 0) {
+      console.warn('[Globe] No videos with coordinates found');
+      return;
+    }
+
+    // Create markers for each video
+    videosWithCoords.forEach((video, index) => {
+      const lat = video.latitude ?? video.city_latitude;
+      const lng = video.longitude ?? video.city_longitude;
+      
+      const latNum = typeof lat === 'string' ? parseFloat(lat) : lat;
+      const lngNum = typeof lng === 'string' ? parseFloat(lng) : lng;
+      
+      if (latNum === null || lngNum === null || isNaN(latNum) || isNaN(lngNum)) {
+        console.warn(`[Globe] Skipping video ${video.video_name} - invalid coordinates:`, { lat, lng });
+        return;
+      }
+
+      console.log(`[Globe] Creating marker ${index + 1}/${videosWithCoords.length} for ${video.video_name} at (${latNum}, ${lngNum})`);
+
+      const entity = videoDataSource.entities.add({
+        position: Cesium.Cartesian3.fromDegrees(
+          lngNum,
+          latNum,
+          50 // Slightly above ground
+        ),
+        billboard: {
+          image: createVideoDotCanvas(),
+          scale: 1.0,
+          heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND,
+          eyeOffset: new Cesium.Cartesian3(0, 0, -1000),
+          disableDepthTestDistance: 1000000,
+          verticalOrigin: Cesium.VerticalOrigin.CENTER,
+          horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
+        },
+        label: {
+          text: `${video.video_name}\n${video.link}`,
+          font: '12pt sans-serif',
+          fillColor: Cesium.Color.WHITE,
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 2,
+          style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+          pixelOffset: new Cesium.Cartesian2(0, -40),
+          show: false, // Hide by default, show on hover
+          disableDepthTestDistance: 1000000,
+          backgroundColor: Cesium.Color.BLACK.withAlpha(0.7),
+          showBackground: true,
+          backgroundPadding: new Cesium.Cartesian2(8, 4),
+        },
+        properties: {
+          videoId: video.id,
+          videoName: video.video_name,
+          videoLink: video.link,
+          isVideo: true,
+        }
+      });
+    });
+
+    // Add data source to viewer
+    viewer.dataSources.add(videoDataSource);
+    console.log(`[Globe] Added ${videosWithCoords.length} video markers to globe`);
+
+    // Note: Hover effects are handled by the existing handler in createHeatmap
+    // Video markers will work with the same hover handler since they're in a separate data source
+
+  }, []);
 
   // Zoom to city
   const zoomToCity = useCallback(async (cityName: string, Cesium: typeof import('cesium')) => {
@@ -766,6 +947,31 @@ export default function Globe() {
             });
           }
 
+          // Adjust video entities to the new mode
+          if (videoDataSourceRef.current) {
+            const entities = videoDataSourceRef.current.entities.values;
+            entities.forEach((ent: any) => {
+              if (ent.billboard) {
+                if (mode === Cesium.SceneMode.SCENE2D) {
+                  ent.billboard.heightReference = Cesium.HeightReference.NONE;
+                  ent.billboard.eyeOffset = new Cesium.Cartesian3(0, 0, 0);
+                  ent.billboard.disableDepthTestDistance = Number.POSITIVE_INFINITY;
+                } else {
+                  ent.billboard.heightReference = Cesium.HeightReference.RELATIVE_TO_GROUND;
+                  ent.billboard.eyeOffset = new Cesium.Cartesian3(0, 0, -1000);
+                  ent.billboard.disableDepthTestDistance = 1000000;
+                }
+              }
+              if (ent.label) {
+                if (mode === Cesium.SceneMode.SCENE2D) {
+                  ent.label.disableDepthTestDistance = Number.POSITIVE_INFINITY;
+                } else {
+                  ent.label.disableDepthTestDistance = 1000000;
+                }
+              }
+            });
+          }
+
           // If a metric is active, rebuild the heatmap to ensure perfect alignment in new mode
           try {
             if (selectedMetrics.length > 0) {
@@ -799,6 +1005,7 @@ export default function Globe() {
         viewerRef.current.destroy();
         viewerRef.current = null;
       }
+      videoDataSourceRef.current = null;
     };
   }, []);
 
@@ -830,17 +1037,30 @@ export default function Globe() {
     return () => clearTimeout(timeoutId);
   }, [selectedMetrics, granularFilters, createHeatmap, fetchGlobalData, setSelectedCity]);
 
-  // Handle city selection changes
+  // Handle city selection changes and load video markers
   useEffect(() => {
-    if (!viewerRef.current || !selectedCity) return;
+    if (!viewerRef.current || !selectedCity) {
+      // Clear video markers when no city is selected
+      if (videoDataSourceRef.current && viewerRef.current) {
+        viewerRef.current.dataSources.remove(videoDataSourceRef.current);
+        videoDataSourceRef.current = null;
+      }
+      return;
+    }
 
-    const handleCityZoom = async () => {
+    const handleCityZoomAndVideos = async () => {
       const Cesium = await import('cesium');
+      
+      // Zoom to city
       await zoomToCity(selectedCity, Cesium);
+      
+      // Fetch and display video markers
+      const videos = await fetchCityVideos(selectedCity);
+      await createVideoMarkers(videos, Cesium);
     };
 
-    handleCityZoom();
-  }, [selectedCity, zoomToCity]);
+    handleCityZoomAndVideos();
+  }, [selectedCity, zoomToCity, fetchCityVideos, createVideoMarkers]);
 
   // Listen for globe reset event
   useEffect(() => {

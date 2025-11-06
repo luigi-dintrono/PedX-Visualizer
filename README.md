@@ -775,3 +775,65 @@ The database includes sample data from 10 major cities:
 - Stockholm, Vienna
 
 Each city has realistic pedestrian crossing metrics based on urban planning research and cultural behaviors.
+
+## Future Plans
+
+### Video Coordinates
+
+The video coordinate system allows individual videos to have their own geographic coordinates, separate from city-level coordinates. This enables precise visualization of video locations on the globe when a city is selected.
+
+#### Implementation
+
+The feature was implemented with the following components:
+
+1. **Database Schema**: Added `latitude` and `longitude` columns to the `videos` table, allowing optional coordinate storage per video.
+
+2. **Migration Script**: Created `scripts/migrate-add-video-coordinates.sql` to add the columns and populate mock data for testing.
+
+3. **API Updates**: Enhanced `/api/cities/[city]/videos` endpoint to return video coordinates along with city fallback coordinates.
+
+4. **Globe Visualization**: Updated the Globe component to:
+   - Fetch videos when a city is selected
+   - Display video coordinates as blue square markers (distinct from circular city markers)
+   - Fall back to city coordinates if video coordinates are unavailable
+   - Show video information on hover
+
+5. **Mock Data Generation**: Created `scripts/add-mock-video-coordinates.js` to generate test coordinates within a small radius of each city center.
+
+#### Usage for Future Engineers
+
+**Setting Up Video Coordinates:**
+
+1. Run the migration to add coordinate columns:
+   ```bash
+   make db-migrate-video-coordinates
+   ```
+
+2. Add coordinates to videos (either real or mock data):
+   ```bash
+   make db-add-mock-video-coordinates
+   ```
+
+3. Or manually update video coordinates in the database:
+   ```sql
+   UPDATE videos 
+   SET latitude = 40.7128, longitude = -74.0060 
+   WHERE id = 1;
+   ```
+
+**How It Works:**
+
+- When a city is selected, the Globe component fetches all videos for that city via `/api/cities/[city]/videos`
+- Videos with coordinates (either video-specific or city fallback) are displayed as blue square markers
+- The system gracefully handles missing coordinates by falling back to city coordinates
+- Video markers are automatically cleared when no city is selected
+
+**Extending the Feature:**
+
+- **Real Coordinate Data**: Replace mock data with actual GPS coordinates from video metadata
+- **Video Clustering**: Implement marker clustering for cities with many videos
+- **Video Selection**: Add click handlers to select and display video details
+- **Coordinate Validation**: Add validation to ensure coordinates are within city boundaries
+- **Batch Import**: Create scripts to import coordinates from external data sources
+
+For detailed setup instructions, see [VIDEO_COORDINATES_SETUP.md](./VIDEO_COORDINATES_SETUP.md).

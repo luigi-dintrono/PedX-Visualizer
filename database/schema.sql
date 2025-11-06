@@ -83,6 +83,9 @@ CREATE TABLE videos (
     -- Crossing metrics
     crossing_time DECIMAL(8, 4),
     crossing_speed DECIMAL(8, 4),
+    -- Geographic coordinates (optional - if null, use city coordinates)
+    latitude DECIMAL(10, 8),
+    longitude DECIMAL(11, 8),
     -- Metadata
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -218,6 +221,7 @@ CREATE INDEX idx_cities_geographic ON cities(latitude, longitude);
 CREATE INDEX idx_videos_city_id ON videos(city_id);
 CREATE INDEX idx_videos_link ON videos(link);
 CREATE INDEX idx_videos_weather ON videos(main_weather);
+CREATE INDEX idx_videos_geographic ON videos(latitude, longitude);
 
 -- Pedestrians indexes
 CREATE INDEX idx_pedestrians_video_id ON pedestrians(video_id);
@@ -360,6 +364,8 @@ SELECT
     v.video_name,
     v.link,
     v.city_link,
+    v.latitude,
+    v.longitude,
     c.city,
     c.country,
     c.continent,
@@ -398,7 +404,7 @@ SELECT
 FROM videos v
 LEFT JOIN cities c ON v.city_id = c.id
 LEFT JOIN pedestrians p ON v.id = p.video_id
-GROUP BY v.id, v.video_name, v.link, v.city_link, c.city, c.country, c.continent,
+GROUP BY v.id, v.video_name, v.link, v.city_link, v.latitude, v.longitude, c.city, c.country, c.continent,
          v.duration_seconds, v.total_frames, v.analysis_seconds, v.total_pedestrians,
          v.total_crossed_pedestrians, v.average_age, v.phone_usage_ratio,
          v.risky_crossing_ratio, v.run_red_light_ratio, v.crosswalk_usage_ratio,
