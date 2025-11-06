@@ -13,6 +13,39 @@ interface Relationship {
   description: string;
 }
 
+// Helper function to calculate baseline from array of values
+function calculateBaseline(values: number[]): number {
+  if (values.length === 0) return 0;
+  const validValues = values.filter(v => !isNaN(v) && isFinite(v));
+  if (validValues.length === 0) return 0;
+  return validValues.reduce((sum, v) => sum + v, 0) / validValues.length;
+}
+
+// Helper function to apply category balancing (max N per category)
+function balanceCategories(relationships: Relationship[], maxPerCategory: number = 3): Relationship[] {
+  const byCategory: Record<string, Relationship[]> = {};
+  
+  // Group by category
+  for (const rel of relationships) {
+    if (!byCategory[rel.category]) {
+      byCategory[rel.category] = [];
+    }
+    byCategory[rel.category].push(rel);
+  }
+  
+  // Take top N from each category (already sorted by effect size)
+  const balanced: Relationship[] = [];
+  for (const category of Object.keys(byCategory)) {
+    const categoryRels = byCategory[category]
+      .sort((a, b) => Math.abs(b.effectSize) - Math.abs(a.effectSize))
+      .slice(0, maxPerCategory);
+    balanced.push(...categoryRels);
+  }
+  
+  // Final sort by absolute effect size
+  return balanced.sort((a, b) => Math.abs(b.effectSize) - Math.abs(a.effectSize));
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: { metric: string } }
@@ -21,27 +54,37 @@ export async function GET(
     const metric = params.metric;
     const relationships: Relationship[] = [];
 
-    // Load weather/daytime relationships from CSV
+    // ===== WEATHER/DAYTIME RELATIONSHIPS =====
     const weatherDaytimePath = path.join(process.cwd(), 'summary_data', 'weather_daytime_stats.csv');
     if (fs.existsSync(weatherDaytimePath)) {
       const csvContent = fs.readFileSync(weatherDaytimePath, 'utf-8');
       const records = parse(csvContent, { columns: true, skip_empty_lines: true });
 
-      for (const record of records) {
-        const weather = record.weather;
-        const daytime = record.daytime === '1' ? 'Day' : 'Night';
-        const riskyProb = parseFloat(record.risky_crossing_prob);
-        const redLightProb = parseFloat(record.run_red_light_prob);
+      // Calculate baselines from data
+      const riskyProbs = records
+        .map((r: any) => parseFloat(r.risky_crossing_prob))
+        .filter(v => !isNaN(v));
+      const redLightProbs = records
+        .map((r: any) => parseFloat(r.run_red_light_prob))
+        .filter(v => !isNaN(v));
+      
+      const baselineRisky = calculateBaseline(riskyProbs) * 100; // Convert to percentage
+      const baselineRedLight = calculateBaseline(redLightProbs) * 100;
 
-        // Only show relationships for the selected metric
+      for (const record of records) {
+        const rec = record as any;
+        const weather = rec.weather;
+        const daytime = rec.daytime === '1' ? 'Day' : 'Night';
+        const riskyProb = parseFloat(rec.risky_crossing_prob) * 100; // Convert to percentage
+        const redLightProb = parseFloat(rec.run_red_light_prob) * 100;
+
         if (metric === 'risky_crossing' && !isNaN(riskyProb)) {
-          const baselineRisky = 20; // Approximate baseline
           const effectSize = riskyProb - baselineRisky;
           const direction = effectSize > 0 ? '↑' : '↓';
           
           if (Math.abs(effectSize) > 2) {
             relationships.push({
-              factor: `${weather} + ${daytime}`,
+              factor: `${weather.charAt(0).toUpperCase() + weather.slice(1)} + ${daytime}`,
               category: 'Environmental',
               value: `${riskyProb.toFixed(1)}%`,
               effect: `${direction} ${Math.abs(effectSize).toFixed(1)}%`,
@@ -52,13 +95,12 @@ export async function GET(
         }
 
         if (metric === 'run_red_light' && !isNaN(redLightProb)) {
-          const baselineRedLight = 5; // Approximate baseline
           const effectSize = redLightProb - baselineRedLight;
           const direction = effectSize > 0 ? '↑' : '↓';
           
           if (Math.abs(effectSize) > 1) {
             relationships.push({
-              factor: `${weather} + ${daytime}`,
+              factor: `${weather.charAt(0).toUpperCase() + weather.slice(1)} + ${daytime}`,
               category: 'Environmental',
               value: `${redLightProb.toFixed(1)}%`,
               effect: `${direction} ${Math.abs(effectSize).toFixed(1)}%`,
@@ -70,19 +112,25 @@ export async function GET(
       }
     }
 
-    // Load gender relationships from CSV
+    // ===== GENDER RELATIONSHIPS =====
     const genderStatsPath = path.join(process.cwd(), 'summary_data', 'gender_stats.csv');
     if (fs.existsSync(genderStatsPath)) {
       const csvContent = fs.readFileSync(genderStatsPath, 'utf-8');
       const records = parse(csvContent, { columns: true, skip_empty_lines: true });
 
+      // Calculate baseline from data
+      const riskyProbs = records
+        .map((r: any) => parseFloat(r.risky_crossing))
+        .filter(v => !isNaN(v));
+      const baselineRisky = calculateBaseline(riskyProbs) * 100; // Convert to percentage
+
       for (const record of records) {
-        const gender = record.gender;
+        const rec = record as any;
+        const gender = rec.gender;
         
-        if (metric === 'risky_crossing' && record.risky_crossing_prob) {
-          const riskyProb = parseFloat(record.risky_crossing_prob);
-          const baseline = 20;
-          const effectSize = riskyProb - baseline;
+        if (metric === 'risky_crossing' && rec.risky_crossing) {
+          const riskyProb = parseFloat(rec.risky_crossing) * 100;
+          const effectSize = riskyProb - baselineRisky;
           const direction = effectSize > 0 ? '↑' : '↓';
 
           if (Math.abs(effectSize) > 2) {
@@ -96,59 +144,284 @@ export async function GET(
             });
           }
         }
-
-        if (metric === 'phone_usage' && record.phone_using_prob) {
-          const phoneProb = parseFloat(record.phone_using_prob);
-          
-          relationships.push({
-            factor: gender.charAt(0).toUpperCase() + gender.slice(1),
-            category: 'Demographics',
-            value: `${phoneProb.toFixed(1)}%`,
-            effect: `${phoneProb.toFixed(1)}%`,
-            effectSize: phoneProb,
-            description: `${gender.charAt(0).toUpperCase() + gender.slice(1)} pedestrians use phones ${phoneProb.toFixed(1)}% of the time while crossing`,
-          });
-        }
       }
     }
 
-    // Load vehicle relationships from CSV
-    const vehicleStatsPath = path.join(process.cwd(), 'summary_data', 'vehicle_stats.csv');
-    if (fs.existsSync(vehicleStatsPath)) {
-      const csvContent = fs.readFileSync(vehicleStatsPath, 'utf-8');
+    // ===== AGE RELATIONSHIPS =====
+    const ageStatsPath = path.join(process.cwd(), 'summary_data', 'age_stats.csv');
+    if (fs.existsSync(ageStatsPath)) {
+      const csvContent = fs.readFileSync(ageStatsPath, 'utf-8');
       const records = parse(csvContent, { columns: true, skip_empty_lines: true });
 
+      // Calculate baseline from data
+      const riskyProbs = records
+        .map((r: any) => parseFloat(r.risky_crossing))
+        .filter(v => !isNaN(v));
+      const redLightProbs = records
+        .map((r: any) => parseFloat(r.run_red_light))
+        .filter(v => !isNaN(v));
+      
+      const baselineRisky = calculateBaseline(riskyProbs) * 100;
+      const baselineRedLight = calculateBaseline(redLightProbs) * 100;
+
+      // Group ages into ranges for better insights
+      const ageGroups: Record<string, { ages: number[], risky: number[], redLight: number[] }> = {
+        'Young (18-30)': { ages: [], risky: [], redLight: [] },
+        'Middle (31-50)': { ages: [], risky: [], redLight: [] },
+        'Older (51+)': { ages: [], risky: [], redLight: [] },
+      };
+
       for (const record of records) {
-        const vehicleType = record.vehicle_type;
-        
-        if (metric === 'crossing_speed' && record.avg_crossing_speed) {
-          const speed = parseFloat(record.avg_crossing_speed);
-          const baseline = 1.5; // m/s baseline
-          const effectSize = ((speed - baseline) / baseline) * 100;
+        const rec = record as any;
+        const age = parseInt(rec.age);
+        if (isNaN(age)) continue;
+
+        const riskyProb = parseFloat(rec.risky_crossing);
+        const redLightProb = parseFloat(rec.run_red_light);
+
+        if (age >= 18 && age <= 30) {
+          ageGroups['Young (18-30)'].ages.push(age);
+          if (!isNaN(riskyProb)) ageGroups['Young (18-30)'].risky.push(riskyProb);
+          if (!isNaN(redLightProb)) ageGroups['Young (18-30)'].redLight.push(redLightProb);
+        } else if (age >= 31 && age <= 50) {
+          ageGroups['Middle (31-50)'].ages.push(age);
+          if (!isNaN(riskyProb)) ageGroups['Middle (31-50)'].risky.push(riskyProb);
+          if (!isNaN(redLightProb)) ageGroups['Middle (31-50)'].redLight.push(redLightProb);
+        } else if (age >= 51) {
+          ageGroups['Older (51+)'].ages.push(age);
+          if (!isNaN(riskyProb)) ageGroups['Older (51+)'].risky.push(riskyProb);
+          if (!isNaN(redLightProb)) ageGroups['Older (51+)'].redLight.push(redLightProb);
+        }
+      }
+
+      // Create relationships for age groups
+      for (const [groupName, groupData] of Object.entries(ageGroups)) {
+        if (groupData.risky.length > 0 && metric === 'risky_crossing') {
+          const avgRisky = calculateBaseline(groupData.risky) * 100;
+          const effectSize = avgRisky - baselineRisky;
           const direction = effectSize > 0 ? '↑' : '↓';
 
-          if (Math.abs(effectSize) > 5) {
+          if (Math.abs(effectSize) > 2) {
             relationships.push({
-              factor: vehicleType.charAt(0).toUpperCase() + vehicleType.slice(1),
-              category: 'Vehicles',
-              value: `${speed.toFixed(2)} m/s`,
-              effect: `${direction} ${Math.abs(effectSize).toFixed(0)}%`,
+              factor: groupName,
+              category: 'Demographics',
+              value: `${avgRisky.toFixed(1)}%`,
+              effect: `${direction} ${Math.abs(effectSize).toFixed(1)}%`,
               effectSize: effectSize,
-              description: `Presence of ${vehicleType} ${direction === '↑' ? 'increases' : 'decreases'} crossing speed by ${Math.abs(effectSize).toFixed(0)}%`,
+              description: `${groupName} pedestrians show ${Math.abs(effectSize).toFixed(1)}% ${direction === '↑' ? 'higher' : 'lower'} risky crossing rate`,
+            });
+          }
+        }
+
+        if (groupData.redLight.length > 0 && metric === 'run_red_light') {
+          const avgRedLight = calculateBaseline(groupData.redLight) * 100;
+          const effectSize = avgRedLight - baselineRedLight;
+          const direction = effectSize > 0 ? '↑' : '↓';
+
+          if (Math.abs(effectSize) > 1) {
+            relationships.push({
+              factor: groupName,
+              category: 'Demographics',
+              value: `${avgRedLight.toFixed(1)}%`,
+              effect: `${direction} ${Math.abs(effectSize).toFixed(1)}%`,
+              effectSize: effectSize,
+              description: `${groupName} pedestrians show ${Math.abs(effectSize).toFixed(1)}% ${direction === '↑' ? 'higher' : 'lower'} red light violation rate`,
             });
           }
         }
       }
     }
 
-    // Sort by absolute effect size
-    relationships.sort((a, b) => Math.abs(b.effectSize) - Math.abs(a.effectSize));
+    // ===== CLOTHING RELATIONSHIPS =====
+    const clothingStatsPath = path.join(process.cwd(), 'summary_data', 'clothing_stats.csv');
+    if (fs.existsSync(clothingStatsPath)) {
+      const csvContent = fs.readFileSync(clothingStatsPath, 'utf-8');
+      const records = parse(csvContent, { columns: true, skip_empty_lines: true });
 
+      // Calculate baseline from data
+      const riskyRates = records
+        .map((r: any) => parseFloat(r['risky_crossing_rate(%)']))
+        .filter(v => !isNaN(v));
+      const redLightRates = records
+        .map((r: any) => parseFloat(r['run_red_light_rate(%)']))
+        .filter(v => !isNaN(v));
+      
+      const baselineRisky = calculateBaseline(riskyRates);
+      const baselineRedLight = calculateBaseline(redLightRates);
+
+      for (const record of records) {
+        const rec = record as any;
+        const clothingType = rec.clothing_type;
+        const riskyRate = parseFloat(rec['risky_crossing_rate(%)']);
+        const redLightRate = parseFloat(rec['run_red_light_rate(%)']);
+
+        if (metric === 'risky_crossing' && !isNaN(riskyRate)) {
+          const effectSize = riskyRate - baselineRisky;
+          const direction = effectSize > 0 ? '↑' : '↓';
+
+          if (Math.abs(effectSize) > 2) {
+            relationships.push({
+              factor: clothingType.charAt(0).toUpperCase() + clothingType.slice(1),
+              category: 'Demographics',
+              value: `${riskyRate.toFixed(1)}%`,
+              effect: `${direction} ${Math.abs(effectSize).toFixed(1)}%`,
+              effectSize: effectSize,
+              description: `Pedestrians wearing ${clothingType} show ${Math.abs(effectSize).toFixed(1)}% ${direction === '↑' ? 'higher' : 'lower'} risky crossing rate`,
+            });
+          }
+        }
+
+        if (metric === 'run_red_light' && !isNaN(redLightRate)) {
+          const effectSize = redLightRate - baselineRedLight;
+          const direction = effectSize > 0 ? '↑' : '↓';
+
+          if (Math.abs(effectSize) > 1) {
+            relationships.push({
+              factor: clothingType.charAt(0).toUpperCase() + clothingType.slice(1),
+              category: 'Demographics',
+              value: `${redLightRate.toFixed(1)}%`,
+              effect: `${direction} ${Math.abs(effectSize).toFixed(1)}%`,
+              effectSize: effectSize,
+              description: `Pedestrians wearing ${clothingType} show ${Math.abs(effectSize).toFixed(1)}% ${direction === '↑' ? 'higher' : 'lower'} red light violation rate`,
+            });
+          }
+        }
+      }
+    }
+
+    // ===== PHONE USAGE RELATIONSHIPS =====
+    const phoneStatsPath = path.join(process.cwd(), 'summary_data', 'phone_stats.csv');
+    if (fs.existsSync(phoneStatsPath)) {
+      const csvContent = fs.readFileSync(phoneStatsPath, 'utf-8');
+      const records = parse(csvContent, { columns: true, skip_empty_lines: true });
+
+      // Calculate baseline from all records
+      const allRiskyRates = records
+        .map((r: any) => parseFloat(r['risky_crossing_rate(%)']))
+        .filter(v => !isNaN(v));
+      const allRedLightRates = records
+        .map((r: any) => parseFloat(r['run_red_light_rate(%)']))
+        .filter(v => !isNaN(v));
+      const baselineRisky = calculateBaseline(allRiskyRates);
+      const baselineRedLight = calculateBaseline(allRedLightRates);
+
+      for (const record of records) {
+        const rec = record as any;
+        const accessory = rec.accessory;
+        const riskyRate = parseFloat(rec['risky_crossing_rate(%)']);
+        const redLightRate = parseFloat(rec['run_red_light_rate(%)']);
+
+        if (metric === 'risky_crossing' && !isNaN(riskyRate)) {
+          const effectSize = riskyRate - baselineRisky;
+          const direction = effectSize > 0 ? '↑' : '↓';
+
+          if (Math.abs(effectSize) > 2) {
+            relationships.push({
+              factor: accessory === 'phone_using' ? 'Phone Users' : accessory.charAt(0).toUpperCase() + accessory.slice(1),
+              category: 'Behavior',
+              value: `${riskyRate.toFixed(1)}%`,
+              effect: `${direction} ${Math.abs(effectSize).toFixed(1)}%`,
+              effectSize: effectSize,
+              description: `Pedestrians ${accessory === 'phone_using' ? 'using phones' : `with ${accessory}`} show ${Math.abs(effectSize).toFixed(1)}% ${direction === '↑' ? 'higher' : 'lower'} risky crossing rate`,
+            });
+          }
+        }
+
+        if (metric === 'run_red_light' && !isNaN(redLightRate)) {
+          const effectSize = redLightRate - baselineRedLight;
+          const direction = effectSize > 0 ? '↑' : '↓';
+
+          if (Math.abs(effectSize) > 1) {
+            relationships.push({
+              factor: accessory === 'phone_using' ? 'Phone Users' : accessory.charAt(0).toUpperCase() + accessory.slice(1),
+              category: 'Behavior',
+              value: `${redLightRate.toFixed(1)}%`,
+              effect: `${direction} ${Math.abs(effectSize).toFixed(1)}%`,
+              effectSize: effectSize,
+              description: `Pedestrians ${accessory === 'phone_using' ? 'using phones' : `with ${accessory}`} show ${Math.abs(effectSize).toFixed(1)}% ${direction === '↑' ? 'higher' : 'lower'} red light violation rate`,
+            });
+          }
+        }
+      }
+    }
+
+    // ===== VEHICLE RELATIONSHIPS =====
+    const vehicleStatsPath = path.join(process.cwd(), 'summary_data', 'vehicle_stats.csv');
+    if (fs.existsSync(vehicleStatsPath)) {
+      const csvContent = fs.readFileSync(vehicleStatsPath, 'utf-8');
+      const records = parse(csvContent, { columns: true, skip_empty_lines: true });
+
+      // Check if crossing_speed data exists in crossing_stats.csv
+      const crossingStatsPath = path.join(process.cwd(), 'summary_data', 'crossing_stats.csv');
+      let speedData: Record<string, number> = {};
+      
+      if (fs.existsSync(crossingStatsPath) && metric === 'crossing_speed') {
+        const crossingContent = fs.readFileSync(crossingStatsPath, 'utf-8');
+        const crossingRecords = parse(crossingContent, { columns: true, skip_empty_lines: true });
+        // Note: crossing_stats.csv has continent-level data, not vehicle-level
+        // We'll skip vehicle speed relationships if no direct data
+      }
+
+      // Use available columns: risky_crossing_rate and run_red_light_rate
+      const riskyRates = records
+        .map((r: any) => parseFloat(r['risky_crossing_rate(%)']))
+        .filter(v => !isNaN(v));
+      const redLightRates = records
+        .map((r: any) => parseFloat(r['run_red_light_rate(%)']))
+        .filter(v => !isNaN(v));
+      
+      const baselineRisky = calculateBaseline(riskyRates);
+      const baselineRedLight = calculateBaseline(redLightRates);
+
+      for (const record of records) {
+        const rec = record as any;
+        const vehicleType = rec.vehicle_type;
+        const riskyRate = parseFloat(rec['risky_crossing_rate(%)']);
+        const redLightRate = parseFloat(rec['run_red_light_rate(%)']);
+
+        if (metric === 'risky_crossing' && !isNaN(riskyRate)) {
+          const effectSize = riskyRate - baselineRisky;
+          const direction = effectSize > 0 ? '↑' : '↓';
+
+          if (Math.abs(effectSize) > 2) {
+            relationships.push({
+              factor: vehicleType.charAt(0).toUpperCase() + vehicleType.slice(1),
+              category: 'Vehicles',
+              value: `${riskyRate.toFixed(1)}%`,
+              effect: `${direction} ${Math.abs(effectSize).toFixed(1)}%`,
+              effectSize: effectSize,
+              description: `Presence of ${vehicleType} ${direction === '↑' ? 'increases' : 'decreases'} risky crossing rate by ${Math.abs(effectSize).toFixed(1)}%`,
+            });
+          }
+        }
+
+        if (metric === 'run_red_light' && !isNaN(redLightRate)) {
+          const effectSize = redLightRate - baselineRedLight;
+          const direction = effectSize > 0 ? '↑' : '↓';
+
+          if (Math.abs(effectSize) > 1) {
+            relationships.push({
+              factor: vehicleType.charAt(0).toUpperCase() + vehicleType.slice(1),
+              category: 'Vehicles',
+              value: `${redLightRate.toFixed(1)}%`,
+              effect: `${direction} ${Math.abs(effectSize).toFixed(1)}%`,
+              effectSize: effectSize,
+              description: `Presence of ${vehicleType} ${direction === '↑' ? 'increases' : 'decreases'} red light violation rate by ${Math.abs(effectSize).toFixed(1)}%`,
+            });
+          }
+        }
+      }
+    }
+
+    // Apply category balancing (max 3 per category)
+    const balancedRelationships = balanceCategories(relationships, 3);
+
+    // Return top 10 overall (after balancing)
     return NextResponse.json({
       success: true,
       data: {
         metric,
-        relationships: relationships.slice(0, 10), // Top 10 relationships
+        relationships: balancedRelationships.slice(0, 10),
       },
     });
   } catch (error) {
@@ -159,4 +432,3 @@ export async function GET(
     );
   }
 }
-
