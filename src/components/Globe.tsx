@@ -561,11 +561,25 @@ export default function Globe() {
       }
     }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
 
-    // Add click handler to select city
+    // Add click handler to select city or open video
     handler.setInputAction((event: any) => {
       const pickedObject = viewer.scene.pick(event.position);
       
       if (Cesium.defined(pickedObject) && pickedObject.id && pickedObject.id.properties) {
+        // Check if it's a video marker
+        const isVideo = pickedObject.id.properties.isVideo?.getValue();
+        if (isVideo) {
+          const videoLink = pickedObject.id.properties.videoLink?.getValue();
+          if (videoLink) {
+            // Construct YouTube URL: https://www.youtube.com/watch?v= + video link
+            const youtubeUrl = `https://www.youtube.com/watch?v=${videoLink}`;
+            // Open video URL in a new tab
+            window.open(youtubeUrl, '_blank', 'noopener,noreferrer');
+            return;
+          }
+        }
+        
+        // Otherwise, handle as city selection
         const cityName = pickedObject.id.properties.city?.getValue();
         if (cityName && onCityClick) {
           onCityClick(cityName);
@@ -657,7 +671,7 @@ export default function Globe() {
           horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
         },
         label: {
-          text: `${video.video_name}\n${video.link}`,
+          text: `${video.video_name}\n${video.link}\nClick to open video`,
           font: '12pt sans-serif',
           fillColor: Cesium.Color.WHITE,
           outlineColor: Cesium.Color.BLACK,
@@ -683,8 +697,9 @@ export default function Globe() {
     viewer.dataSources.add(videoDataSource);
     console.log(`[Globe] Added ${videosWithCoords.length} video markers to globe`);
 
-    // Note: Hover effects are handled by the existing handler in createHeatmap
-    // Video markers will work with the same hover handler since they're in a separate data source
+    // Note: Hover effects and click handlers are handled by the existing handler in createHeatmap
+    // Video markers will work with the same handlers since they're in a separate data source
+    // The click handler checks for isVideo property to distinguish video markers from city markers
 
   }, []);
 
