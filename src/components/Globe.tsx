@@ -1028,7 +1028,7 @@ export default function Globe() {
           // Adjust existing entities to the new mode
           if (dataSourceRef.current) {
             const entities = dataSourceRef.current.entities.values;
-            entities.forEach((ent: any) => {
+            entities.forEach((ent: Cesium.Entity) => {
               if (ent.billboard) {
                 if (mode === Cesium.SceneMode.SCENE2D) {
                   ent.billboard.heightReference = Cesium.HeightReference.NONE;
@@ -1053,7 +1053,7 @@ export default function Globe() {
           // Adjust video entities to the new mode
           if (videoDataSourceRef.current) {
             const entities = videoDataSourceRef.current.entities.values;
-            entities.forEach((ent: any) => {
+            entities.forEach((ent: Cesium.Entity) => {
               if (ent.billboard) {
                 if (mode === Cesium.SceneMode.SCENE2D) {
                   ent.billboard.heightReference = Cesium.HeightReference.NONE;
