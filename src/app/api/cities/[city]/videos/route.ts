@@ -3,10 +3,10 @@ import { pool } from '@/lib/database';
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { city: string } }
+  { params }: { params: Promise<{ city: string }> }
 ) {
   try {
-    const city = params.city;
+    const { city } = await params;
     const limit = parseInt(request.nextUrl.searchParams.get('limit') || '5');
 
     const query = `

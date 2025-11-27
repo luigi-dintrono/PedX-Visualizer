@@ -133,12 +133,45 @@ export function InfoSidebar() {
   const [selectedMetricForChart, setSelectedMetricForChart] = useState<string | null>(null)
   const [temporalLoading, setTemporalLoading] = useState(false)
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [globalInsights, setGlobalInsights] = useState<{
+    crossing_speed: number | null;
+    crossing_time: number | null;
+    risky_crossing_rate: number | null;
+    run_red_light_rate: number | null;
+    crosswalk_usage_rate: number | null;
+    phone_usage_rate: number | null;
+    avg_pedestrian_age: number | null;
+  } | null>(null)
+  const [cityDetails, setCityDetails] = useState<{
+    rankings: {
+      crossing_speed: { rank: number | null; total_cities: number | null };
+      risky_crossing: { rank: number | null; total_cities: number | null };
+      run_red_light: { rank: number | null; total_cities: number | null };
+    };
+    environment: {
+      weather: Array<{ type: string; percentage: number }>;
+      daytime: Array<{ type: string; percentage: number }>;
+    };
+    demographics: {
+      gender: Array<{ type: string; percentage: number }>;
+      age: Array<{ group: string; risky_rate: number; red_light_rate: number }>;
+    };
+    vehicles: Array<{ type: string; percentage: number }>;
+    risk_factors: Array<{ factor: string; risk_increase: number; sample_size: number }>;
+    avg_pedestrian_age: number | null;
+  } | null>(null)
+  const [cityDetailsLoading, setCityDetailsLoading] = useState(false)
 
   // Debug logging to see what's happening
   useEffect(() => {
     console.log('InfoSidebar - selectedCity:', selectedCity)
     console.log('InfoSidebar - filteredCityData:', filteredCityData)
   }, [selectedCity, filteredCityData])
+
+  // Fetch global insights once on mount
+  useEffect(() => {
+    fetchGlobalInsights()
+  }, [])
 
   // Fetch top insights for Empty mode
   useEffect(() => {
@@ -153,10 +186,23 @@ export function InfoSidebar() {
       fetchMetricRelationships(selectedMetrics[0])
     } else if (selectedCity) {
       fetchCityVideos(selectedCity)
+      fetchCityDetails(selectedCity)
       setMetricData(null)
       setMetricRelationships([])
     }
   }, [selectedCity, selectedMetrics])
+
+  const fetchGlobalInsights = async () => {
+    try {
+      const response = await fetch('/api/insights/global')
+      const result = await response.json()
+      if (result.success) {
+        setGlobalInsights(result.data)
+      }
+    } catch (error) {
+      console.error('Error fetching global insights:', error)
+    }
+  }
 
   const fetchTopInsights = async () => {
     setLoading(true)
@@ -183,6 +229,26 @@ export function InfoSidebar() {
     } catch (error) {
       console.error('Error fetching city videos:', error)
       setCityVideos([])
+    }
+  }
+
+  const fetchCityDetails = async (city: string) => {
+    setCityDetailsLoading(true)
+    try {
+      const response = await fetch(`/api/cities/${encodeURIComponent(city)}/details`)
+      const result = await response.json()
+      console.log('City details API response:', { city, success: result.success, data: result.data })
+      if (result.success && result.data) {
+        setCityDetails(result.data)
+      } else {
+        console.warn('City details API returned unsuccessful or no data:', result)
+        setCityDetails(null)
+      }
+    } catch (error) {
+      console.error('Error fetching city details:', error)
+      setCityDetails(null)
+    } finally {
+      setCityDetailsLoading(false)
     }
   }
 
@@ -256,6 +322,111 @@ export function InfoSidebar() {
     if (value === null || value === undefined) return 'N/A'
     const num = typeof value === 'string' ? Number(value) : value
     return isNaN(num) ? 'N/A' : num.toFixed(decimals)
+  }
+
+  // Calculate percentage difference vs global for a metric
+  const calculateDeltaVsGlobal = (
+    cityValue: string | number | null | undefined,
+    globalValue: number | null | undefined,
+    metricType: 'rate' | 'speed' | 'time' = 'rate'
+  ): { delta: number | null; formatted: string; color: string } => {
+    if (!cityValue || cityValue === null || cityValue === undefined || 
+        !globalValue || globalValue === null || globalValue === 0) {
+      return { delta: null, formatted: 'N/A', color: 'text-muted-foreground' }
+    }
+
+    const cityNum = typeof cityValue === 'string' ? parseFloat(cityValue) : cityValue
+    if (isNaN(cityNum) || cityNum === null) {
+      return { delta: null, formatted: 'N/A', color: 'text-muted-foreground' }
+    }
+
+    // Normalize values: if city value is < 1 and metricType is rate, it's a ratio (0-1), convert to percentage
+    let cityNormalized = cityNum
+    let globalNormalized = globalValue
+    
+    if (metricType === 'rate') {
+      // If city value is less than 1, it's likely a ratio, convert to percentage
+      if (cityNum < 1 && cityNum > 0) {
+        cityNormalized = cityNum * 100
+      }
+      // Global value is already in percentage form (from API conversion)
+    }
+
+    // Calculate percentage difference
+    const delta = ((cityNormalized - globalNormalized) / globalNormalized) * 100
+
+    const formatted = `${delta >= 0 ? '+' : ''}${delta.toFixed(1)}%`
+    
+    // Color will be determined by the calling function based on metric semantics
+    const color = 'text-muted-foreground' // Default, will be overridden
+
+    return { delta, formatted, color }
+  }
+
+  // Helper to get delta for specific metrics with proper color coding
+  const getMetricDelta = (metricKey: string, cityValue: string | number | null | undefined): { formatted: string; color: string } => {
+    if (!globalInsights) {
+      return { formatted: 'N/A', color: 'text-muted-foreground' }
+    }
+
+    let globalValue: number | null = null
+    let metricType: 'rate' | 'speed' | 'time' = 'rate'
+
+    switch (metricKey) {
+      case 'crossing_speed':
+        globalValue = globalInsights.crossing_speed
+        metricType = 'speed'
+        break
+      case 'crossing_time':
+        globalValue = globalInsights.crossing_time
+        metricType = 'time'
+        break
+      case 'risky_crossing_rate':
+        globalValue = globalInsights.risky_crossing_rate
+        metricType = 'rate'
+        break
+      case 'run_red_light_rate':
+        globalValue = globalInsights.run_red_light_rate
+        metricType = 'rate'
+        break
+      case 'crosswalk_usage_rate':
+        globalValue = globalInsights.crosswalk_usage_rate
+        metricType = 'rate'
+        break
+      default:
+        return { formatted: 'N/A', color: 'text-muted-foreground' }
+    }
+
+    const result = calculateDeltaVsGlobal(cityValue, globalValue, metricType)
+    
+    // Override color based on metric semantics
+    if (metricKey === 'risky_crossing_rate' || metricKey === 'run_red_light_rate') {
+      // Lower is better - green for negative delta, red for positive
+      return {
+        formatted: result.formatted,
+        color: result.delta !== null && result.delta < 0 ? 'text-green-600' : 'text-red-600'
+      }
+    } else if (metricKey === 'crosswalk_usage_rate') {
+      // Higher is better - green for positive delta, red for negative
+      return {
+        formatted: result.formatted,
+        color: result.delta !== null && result.delta > 0 ? 'text-green-600' : 'text-red-600'
+      }
+    } else if (metricKey === 'crossing_speed') {
+      // Higher speed might be better (more efficient) - green for positive, red for negative
+      return {
+        formatted: result.formatted,
+        color: result.delta !== null && result.delta > 0 ? 'text-green-600' : 'text-red-600'
+      }
+    } else if (metricKey === 'crossing_time') {
+      // Lower time is better - green for negative delta, red for positive
+      return {
+        formatted: result.formatted,
+        color: result.delta !== null && result.delta < 0 ? 'text-green-600' : 'text-red-600'
+      }
+    }
+
+    return { formatted: result.formatted, color: result.color }
   }
 
   const getCountryEmoji = (country: string): string => {
@@ -551,7 +722,7 @@ export function InfoSidebar() {
                 <div className="divide-y max-h-[300px] overflow-y-auto">
                   {metricData.cities.slice(0, 10).map((city) => (
                     <ListItem
-                      key={city.city}
+                      key={`${city.city}-${city.country}-${city.rank}`}
                       onClick={() => setSelectedCity(city.city)}
                     >
                       <div className="flex items-center gap-3 flex-1">
@@ -676,7 +847,7 @@ export function InfoSidebar() {
                     <tbody className="divide-y">
                       {metricData.cities.map((city) => (
                         <tr 
-                          key={city.city}
+                          key={`${city.city}-${city.country}-${city.rank}`}
                           className="hover:bg-muted/50 cursor-pointer"
                           onClick={() => setSelectedCity(city.city)}
                         >
@@ -881,7 +1052,9 @@ export function InfoSidebar() {
                   <LineChart className="w-4 h-4 text-muted-foreground" />
                 </div>
                 <div className="text-lg font-bold">{formatNumber(filteredCityData.avg_crossing_speed, 2)} m/s</div>
-                <div className="text-xs text-green-600">+12% vs global</div>
+                <div className={`text-xs ${getMetricDelta('crossing_speed', filteredCityData.avg_crossing_speed).color}`}>
+                  {getMetricDelta('crossing_speed', filteredCityData.avg_crossing_speed).formatted} vs global
+                </div>
               </CardContent>
             </Card>
 
@@ -898,7 +1071,9 @@ export function InfoSidebar() {
                   <LineChart className="w-4 h-4 text-muted-foreground" />
                 </div>
                 <div className="text-lg font-bold">{formatNumber(filteredCityData.avg_crossing_time, 1)}s</div>
-                <div className="text-xs text-red-600">-8% vs global</div>
+                <div className={`text-xs ${getMetricDelta('crossing_time', filteredCityData.avg_crossing_time).color}`}>
+                  {getMetricDelta('crossing_time', filteredCityData.avg_crossing_time).formatted} vs global
+                </div>
               </CardContent>
             </Card>
 
@@ -915,7 +1090,9 @@ export function InfoSidebar() {
                   <LineChart className="w-4 h-4 text-muted-foreground" />
                 </div>
                 <div className="text-lg font-bold">{formatNumber(filteredCityData.risky_crossing_rate, 1)}%</div>
-                <div className="text-xs text-green-600">-5% vs global</div>
+                <div className={`text-xs ${getMetricDelta('risky_crossing_rate', filteredCityData.risky_crossing_rate).color}`}>
+                  {getMetricDelta('risky_crossing_rate', filteredCityData.risky_crossing_rate).formatted} vs global
+                </div>
               </CardContent>
             </Card>
 
@@ -932,7 +1109,9 @@ export function InfoSidebar() {
                   <LineChart className="w-4 h-4 text-muted-foreground" />
                 </div>
                 <div className="text-lg font-bold">{formatNumber(filteredCityData.run_red_light_rate, 1)}%</div>
-                <div className="text-xs text-red-600">+15% vs global</div>
+                <div className={`text-xs ${getMetricDelta('run_red_light_rate', filteredCityData.run_red_light_rate).color}`}>
+                  {getMetricDelta('run_red_light_rate', filteredCityData.run_red_light_rate).formatted} vs global
+                </div>
               </CardContent>
             </Card>
 
@@ -949,7 +1128,9 @@ export function InfoSidebar() {
                   <LineChart className="w-4 h-4 text-muted-foreground" />
                 </div>
                 <div className="text-lg font-bold">{formatNumber(filteredCityData.crosswalk_usage_rate, 1)}%</div>
-                <div className="text-xs text-green-600">+8% vs global</div>
+                <div className={`text-xs ${getMetricDelta('crosswalk_usage_rate', filteredCityData.crosswalk_usage_rate).color}`}>
+                  {getMetricDelta('crosswalk_usage_rate', filteredCityData.crosswalk_usage_rate).formatted} vs global
+                </div>
               </CardContent>
             </Card>
           </div>
@@ -1091,12 +1272,29 @@ export function InfoSidebar() {
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
-              <div className="text-sm">
-                <span className="font-medium">{filteredCityData.city}</span> ranks #3 out of 47 cities for crossing speed
-              </div>
-              <div className="text-sm">
-                Top 3 risk factors: Rain (+23%), Night (+18%), High vehicle density (+12%)
-              </div>
+              {cityDetailsLoading ? (
+                <div className="text-sm text-muted-foreground">Loading rankings...</div>
+              ) : cityDetails ? (
+                <>
+                  {cityDetails.rankings.crossing_speed.rank && cityDetails.rankings.crossing_speed.total_cities && (
+                    <div className="text-sm">
+                      <span className="font-medium">{filteredCityData.city}</span> ranks #{cityDetails.rankings.crossing_speed.rank} out of {cityDetails.rankings.crossing_speed.total_cities} cities for crossing speed
+                    </div>
+                  )}
+                  {cityDetails.risk_factors.length > 0 && (
+                    <div className="text-sm">
+                      Top risk factors: {cityDetails.risk_factors.slice(0, 3).map((rf, idx) => (
+                        <span key={idx}>
+                          {rf.factor} (+{rf.risk_increase.toFixed(0)}%)
+                          {idx < Math.min(cityDetails.risk_factors.length, 3) - 1 ? ', ' : ''}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="text-sm text-muted-foreground">Ranking data not available</div>
+              )}
             </CardContent>
           </Card>
 
@@ -1111,15 +1309,37 @@ export function InfoSidebar() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-2">
-                <div className="text-sm">
-                  <span className="font-medium">Weather:</span> 70% sunny, 20% cloudy, 10% rain
-                </div>
-                <div className="text-sm">
-                  <span className="font-medium">Day/Night:</span> 65% daytime crossings
-                </div>
-                <div className="text-sm">
-                  <span className="font-medium">Infrastructure:</span> Crosswalks present, traffic lights available
-                </div>
+                {cityDetailsLoading ? (
+                  <div className="text-sm text-muted-foreground">Loading environment data...</div>
+                ) : cityDetails ? (
+                  <>
+                    {cityDetails.environment.weather.length > 0 && (
+                      <div className="text-sm">
+                        <span className="font-medium">Weather:</span> {cityDetails.environment.weather.map((w, idx) => (
+                          <span key={idx}>
+                            {w.percentage.toFixed(0)}% {w.type.toLowerCase()}
+                            {idx < cityDetails.environment.weather.length - 1 ? ', ' : ''}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    {cityDetails.environment.daytime.length > 0 && (
+                      <div className="text-sm">
+                        <span className="font-medium">Day/Night:</span> {cityDetails.environment.daytime.map((d, idx) => (
+                          <span key={idx}>
+                            {d.percentage.toFixed(0)}% {d.type.toLowerCase()} crossings
+                            {idx < cityDetails.environment.daytime.length - 1 ? ', ' : ''}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <div className="text-sm">
+                      <span className="font-medium">Infrastructure:</span> Crosswalks present, traffic lights available
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-sm text-muted-foreground">Environment data not available</div>
+                )}
               </CardContent>
             </Card>
 
@@ -1132,15 +1352,46 @@ export function InfoSidebar() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-2">
-                <div className="text-sm">
-                  <span className="font-medium">Gender:</span> 52% male, 48% female
-                </div>
-                <div className="text-sm">
-                  <span className="font-medium">Age:</span> Avg {formatNumber(filteredCityData.avg_pedestrian_age, 1)} years
-                </div>
-                <div className="text-sm">
-                  <span className="font-medium">Risk by age:</span> 18-30 (+15%), 50+ (-8%)
-                </div>
+                {cityDetailsLoading ? (
+                  <div className="text-sm text-muted-foreground">Loading demographics...</div>
+                ) : cityDetails ? (
+                  <>
+                    {cityDetails.demographics.gender.length > 0 && (
+                      <div className="text-sm">
+                        <span className="font-medium">Gender:</span> {cityDetails.demographics.gender.map((g, idx) => (
+                          <span key={idx}>
+                            {g.percentage.toFixed(0)}% {g.type}
+                            {idx < cityDetails.demographics.gender.length - 1 ? ', ' : ''}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <div className="text-sm">
+                      <span className="font-medium">Age:</span> Avg {
+                        (cityDetails?.avg_pedestrian_age !== null && cityDetails?.avg_pedestrian_age !== undefined && cityDetails.avg_pedestrian_age > 0)
+                          ? formatNumber(cityDetails.avg_pedestrian_age, 1)
+                          : (filteredCityData.avg_pedestrian_age && (typeof filteredCityData.avg_pedestrian_age === 'number' ? filteredCityData.avg_pedestrian_age > 0 : parseFloat(String(filteredCityData.avg_pedestrian_age)) > 0)
+                              ? formatNumber(filteredCityData.avg_pedestrian_age, 1) 
+                              : 'N/A')
+                        } years
+                    </div>
+                    {cityDetails.demographics.age.length > 0 && (
+                      <div className="text-sm">
+                        <span className="font-medium">Risk by age:</span> {cityDetails.demographics.age.map((a, idx) => {
+                          const riskyDelta = a.risky_rate > 0 ? `+${a.risky_rate.toFixed(0)}%` : `${a.risky_rate.toFixed(0)}%`
+                          return (
+                            <span key={idx}>
+                              {a.group} ({riskyDelta})
+                              {idx < cityDetails.demographics.age.length - 1 ? ', ' : ''}
+                            </span>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="text-sm text-muted-foreground">Demographics data not available</div>
+                )}
               </CardContent>
             </Card>
 
@@ -1153,12 +1404,32 @@ export function InfoSidebar() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-2">
-                <div className="text-sm">
-                  <span className="font-medium">Top vehicles:</span> Cars (45%), Buses (25%), Motorbikes (20%)
-                </div>
-                <div className="text-sm">
-                  <span className="font-medium">Density impact:</span> High density increases risk by 22%
-                </div>
+                {cityDetailsLoading ? (
+                  <div className="text-sm text-muted-foreground">Loading vehicle data...</div>
+                ) : cityDetails ? (
+                  <>
+                    {cityDetails.vehicles && cityDetails.vehicles.length > 0 ? (
+                      <div className="text-sm">
+                        <span className="font-medium">Top vehicles:</span> {cityDetails.vehicles.slice(0, 3).map((v, idx) => (
+                          <span key={idx}>
+                            {v.type.charAt(0).toUpperCase() + v.type.slice(1)} ({v.percentage.toFixed(0)}%)
+                            {idx < Math.min(cityDetails.vehicles.length, 3) - 1 ? ', ' : ''}
+                          </span>
+                        ))}
+                        <div className="text-xs text-muted-foreground mt-1">
+                          (Distribution of vehicle types observed)
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-sm text-muted-foreground">No vehicle data available</div>
+                    )}
+                    <div className="text-sm">
+                      <span className="font-medium">Density impact:</span> High density increases risk by 22%
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-sm text-muted-foreground">Vehicle data not available</div>
+                )}
               </CardContent>
             </Card>
           </div>

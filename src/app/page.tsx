@@ -94,9 +94,45 @@ function MainContent({ isInfoSidebarOpen, setIsInfoSidebarOpen }: {
       );
     }
 
-    // Vehicles
-    if (granularFilters.vehiclePresence === true) {
-      badges.push({ type: 'vehiclePresence', label: 'Vehicles Present', key: 'vehicle-presence' });
+    // Vehicle count filters (only show if not at default range)
+    if (granularFilters.car[0] > 0 || granularFilters.car[1] < 500) {
+      badges.push({ 
+        type: 'car', 
+        label: `Car ${granularFilters.car[0]}-${granularFilters.car[1]}`, 
+        key: 'car-range' 
+      });
+    }
+
+    if (granularFilters.bus[0] > 0 || granularFilters.bus[1] < 100) {
+      badges.push({ 
+        type: 'bus', 
+        label: `Bus ${granularFilters.bus[0]}-${granularFilters.bus[1]}`, 
+        key: 'bus-range' 
+      });
+    }
+
+    if (granularFilters.truck[0] > 0 || granularFilters.truck[1] < 100) {
+      badges.push({ 
+        type: 'truck', 
+        label: `Truck ${granularFilters.truck[0]}-${granularFilters.truck[1]}`, 
+        key: 'truck-range' 
+      });
+    }
+
+    if (granularFilters.motorbike[0] > 0 || granularFilters.motorbike[1] < 200) {
+      badges.push({ 
+        type: 'motorbike', 
+        label: `Motorbike ${granularFilters.motorbike[0]}-${granularFilters.motorbike[1]}`, 
+        key: 'motorbike-range' 
+      });
+    }
+
+    if (granularFilters.bicycle[0] > 0 || granularFilters.bicycle[1] < 300) {
+      badges.push({ 
+        type: 'bicycle', 
+        label: `Bicycle ${granularFilters.bicycle[0]}-${granularFilters.bicycle[1]}`, 
+        key: 'bicycle-range' 
+      });
     }
 
     // Add range filters if not default
@@ -186,9 +222,17 @@ function MainContent({ isInfoSidebarOpen, setIsInfoSidebarOpen }: {
       const newBottomWear = granularFilters.bottomWear.filter(b => b !== badge.label);
       updateGranularFilter('bottomWear', newBottomWear);
     }
-    // Vehicles
-    else if (badge.type === 'vehiclePresence') {
-      updateGranularFilter('vehiclePresence', null);
+    // Vehicle count filters
+    else if (badge.type === 'car') {
+      updateGranularFilter('car', [0, 500]);
+    } else if (badge.type === 'bus') {
+      updateGranularFilter('bus', [0, 100]);
+    } else if (badge.type === 'truck') {
+      updateGranularFilter('truck', [0, 100]);
+    } else if (badge.type === 'motorbike') {
+      updateGranularFilter('motorbike', [0, 200]);
+    } else if (badge.type === 'bicycle') {
+      updateGranularFilter('bicycle', [0, 300]);
     }
   };
 

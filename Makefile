@@ -5,6 +5,8 @@
 .PHONY: db-setup db-reset db-aggregate db-refresh-views db-pipeline
 .PHONY: geonames-update geonames-report geonames-help
 .PHONY: full-pipeline check-env check-deps
+.PHONY: aggregate-crawler-data aggregate-crawler-data-verbose
+.PHONY: fix-encoding fix-encoding-verbose fix-encoding-direct fix-encoding-direct-verbose fix-encoding-sql fix-encoding-complete fix-encoding-proper fix-encoding-final fix-encoding-mapping
 
 # Default target
 .DEFAULT_GOAL := help
@@ -121,6 +123,164 @@ db-reset: ## Reset database (drop and recreate)
 		echo "$(GREEN)✓ Database reset complete$(NC)"; \
 	else \
 		echo "$(RED)Error: .env file not found$(NC)"; \
+		exit 1; \
+	fi
+
+aggregate-crawler-data: ## Aggregate data from pedx_crawler_data to summary_data
+	@echo "$(BLUE)Aggregating data from pedx_crawler_data to summary_data...$(NC)"
+	@if [ ! -d "summary_data" ]; then \
+		echo "$(YELLOW)Creating summary_data directory...$(NC)"; \
+		mkdir -p summary_data; \
+	fi
+	@node scripts/aggregate-pedx-crawler-data.js
+	@echo "$(GREEN)✓ Crawler data aggregation complete$(NC)"
+
+aggregate-crawler-data-verbose: ## Aggregate with verbose logging
+	@echo "$(BLUE)Aggregating data from pedx_crawler_data (verbose)...$(NC)"
+	@if [ ! -d "summary_data" ]; then \
+		echo "$(YELLOW)Creating summary_data directory...$(NC)"; \
+		mkdir -p summary_data; \
+	fi
+	@node scripts/aggregate-pedx-crawler-data.js --verbose
+	@echo "$(GREEN)✓ Crawler data aggregation complete$(NC)"
+
+fix-encoding: ## Fix encoding issues in database city names
+	@echo "$(BLUE)Fixing encoding issues in database...$(NC)"
+	@if [ -f .env ]; then \
+		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
+		node scripts/fix-encoding.js; \
+		echo "$(GREEN)✓ Encoding fix complete$(NC)"; \
+	else \
+		echo "$(RED)Error: .env file not found. Run 'make setup' first$(NC)"; \
+		exit 1; \
+	fi
+
+fix-encoding-verbose: ## Fix encoding with verbose logging
+	@echo "$(BLUE)Fixing encoding issues (verbose)...$(NC)"
+	@if [ -f .env ]; then \
+		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
+		node scripts/fix-encoding.js --verbose; \
+		echo "$(GREEN)✓ Encoding fix complete$(NC)"; \
+	else \
+		echo "$(RED)Error: .env file not found. Run 'make setup' first$(NC)"; \
+		exit 1; \
+	fi
+
+fix-encoding-direct: ## Direct encoding fix - reads CSV and updates DB directly
+	@echo "$(BLUE)Direct encoding fix...$(NC)"
+	@if [ -f .env ]; then \
+		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
+		node scripts/fix-encoding-direct.js; \
+		echo "$(GREEN)✓ Direct encoding fix complete$(NC)"; \
+	else \
+		echo "$(RED)Error: .env file not found. Run 'make setup' first$(NC)"; \
+		exit 1; \
+	fi
+
+fix-encoding-direct-verbose: ## Direct encoding fix with verbose logging
+	@echo "$(BLUE)Direct encoding fix (verbose)...$(NC)"
+	@if [ -f .env ]; then \
+		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
+		node scripts/fix-encoding-direct.js --verbose; \
+		echo "$(GREEN)✓ Direct encoding fix complete$(NC)"; \
+	else \
+		echo "$(RED)Error: .env file not found. Run 'make setup' first$(NC)"; \
+		exit 1; \
+	fi
+
+fix-encoding-sql-script: ## SQL-based encoding fix script - finds and fixes corrupted city names
+	@echo "$(BLUE)SQL-based encoding fix...$(NC)"
+	@if [ -f .env ]; then \
+		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
+		node scripts/fix-encoding-sql.js; \
+		echo "$(GREEN)✓ SQL encoding fix complete$(NC)"; \
+	else \
+		echo "$(RED)Error: .env file not found. Run 'make setup' first$(NC)"; \
+		exit 1; \
+	fi
+
+fix-encoding-complete: ## Complete encoding fix - simple and direct
+	@echo "$(BLUE)Complete encoding fix...$(NC)"
+	@if [ -f .env ]; then \
+		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
+		node scripts/fix-encoding-complete.js; \
+		echo "$(GREEN)✓ Complete encoding fix done$(NC)"; \
+	else \
+		echo "$(RED)Error: .env file not found. Run 'make setup' first$(NC)"; \
+		exit 1; \
+	fi
+
+fix-encoding-proper: ## Proper encoding fix - reads CSV as binary and converts properly
+	@echo "$(BLUE)Proper encoding fix...$(NC)"
+	@if [ -f .env ]; then \
+		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
+		node scripts/fix-encoding-proper.js; \
+		echo "$(GREEN)✓ Proper encoding fix done$(NC)"; \
+	else \
+		echo "$(RED)Error: .env file not found. Run 'make setup' first$(NC)"; \
+		exit 1; \
+	fi
+
+fix-encoding-final: ## Final encoding fix - uses known corrections and proper encoding conversion
+	@echo "$(BLUE)Final encoding fix...$(NC)"
+	@if [ -f .env ]; then \
+		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
+		node scripts/fix-encoding-final.js; \
+		echo "$(GREEN)✓ Final encoding fix done$(NC)"; \
+	else \
+		echo "$(RED)Error: .env file not found. Run 'make setup' first$(NC)"; \
+		exit 1; \
+	fi
+
+fix-encoding-mapping: ## Direct encoding fix using hardcoded known mappings
+	@echo "$(BLUE)Direct encoding fix with known mappings...$(NC)"
+	@if [ -f .env ]; then \
+		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
+		node scripts/fix-encoding-direct-mapping.js; \
+		echo "$(GREEN)✓ Direct mapping fix done$(NC)"; \
+	else \
+		echo "$(RED)Error: .env file not found. Run 'make setup' first$(NC)"; \
+		exit 1; \
+	fi
+
+fix-encoding-sql: ## Fix encoding using direct SQL script
+	@echo "$(BLUE)Fixing encoding with SQL script...$(NC)"
+	@if [ -f .env ]; then \
+		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
+		psql $$DATABASE_URL -f scripts/fix-encoding.sql; \
+		echo "$(GREEN)✓ SQL encoding fix done$(NC)"; \
+	else \
+		echo "$(RED)Error: .env file not found. Run 'make setup' first$(NC)"; \
+		exit 1; \
+	fi
+
+fix-age-data: ## Check and report on age data status in database
+	@echo "$(BLUE)Checking age data status...$(NC)"
+	@node scripts/fix-age-data.js
+
+check-vehicle-data: ## Check vehicle data in the database
+	@echo "$(BLUE)Checking vehicle data...$(NC)"
+	@node scripts/check-vehicle-data.js
+
+add-vehicle-indexes: ## Add indexes on vehicle columns for faster queries
+	@echo "$(BLUE)Adding vehicle indexes...$(NC)"
+	@if [ -f .env ]; then \
+		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
+		psql $$DATABASE_URL -f scripts/add-vehicle-indexes.sql; \
+		echo "$(GREEN)✓ Vehicle indexes added$(NC)"; \
+	else \
+		echo "$(RED)Error: .env file not found. Run 'make setup' first$(NC)"; \
+		exit 1; \
+	fi
+
+test-vehicle-api: ## Test vehicle API query for Ho Chi Minh City
+	@echo "$(BLUE)Testing vehicle API query...$(NC)"
+	@if [ -f .env ]; then \
+		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
+		psql $$DATABASE_URL -f scripts/test-vehicle-api.sql; \
+		echo "$(GREEN)✓ Vehicle API test complete$(NC)"; \
+	else \
+		echo "$(RED)Error: .env file not found. Run 'make setup' first$(NC)"; \
 		exit 1; \
 	fi
 

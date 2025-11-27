@@ -9,11 +9,11 @@ import { pool } from '@/lib/database';
  */
 export async function GET(
   request: NextRequest,
-  { params }: { params: { city: string; metric: string } }
+  { params }: { params: Promise<{ city: string; metric: string }> }
 ) {
   try {
-    const city = decodeURIComponent(params.city);
-    const metric = params.metric;
+    const { city: cityParam, metric } = await params;
+    const city = decodeURIComponent(cityParam);
     const { searchParams } = new URL(request.url);
     const months = parseInt(searchParams.get('months') || '6'); // Default to 6 months
 

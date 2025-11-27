@@ -87,10 +87,10 @@ const METRIC_CONFIGS: Record<string, MetricConfig> = {
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { metric: string } }
+  { params }: { params: Promise<{ metric: string }> }
 ) {
   try {
-    const metric = params.metric;
+    const { metric } = await params;
     const config = METRIC_CONFIGS[metric];
 
     if (!config) {
@@ -140,8 +140,19 @@ export async function GET(
       : null;
 
     // Fetch top cities
+    // Exclude cities with 0.00% for rate metrics (risky_crossing, run_red_light, crosswalk_usage, phone_usage)
     const rankColumn = config.rank_column ? `, ${config.rank_column}` : '';
     const orderDirection = config.higher_is_better ? 'DESC' : 'ASC';
+    
+    // Determine if this is a rate metric (percentage-based)
+    const isRateMetric = ['risky_crossing', 'run_red_light', 'crosswalk_usage', 'phone_usage'].includes(metric);
+    
+    // Build WHERE clause to exclude 0.00% values for rate metrics
+    let whereClause = `${config.column_name} IS NOT NULL`;
+    if (isRateMetric) {
+      // Exclude exactly 0.00% (accounting for potential floating point precision)
+      whereClause += ` AND ${config.column_name} > 0.0001`;
+    }
     
     const citiesResult = await pool.query(`
       SELECT 
@@ -153,7 +164,7 @@ export async function GET(
         pedestrian_count
         ${rankColumn}
       FROM mv_city_insights
-      WHERE ${config.column_name} IS NOT NULL
+      WHERE ${whereClause}
       ORDER BY ${config.column_name} ${orderDirection} NULLS LAST
       LIMIT 100
     `);

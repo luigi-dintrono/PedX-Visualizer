@@ -54,12 +54,29 @@ export async function GET(request: NextRequest) {
     query += ` ORDER BY city LIMIT $${++paramCount}`;
     params.push(limit);
 
+    // Ensure UTF-8 encoding for the query
+    await pool.query("SET client_encoding TO 'UTF8'");
+    
     const result = await pool.query(query, params);
+    
+    // Ensure all string fields are properly encoded
+    const encodedData = result.rows.map((row: any) => {
+      const encodedRow: any = {};
+      for (const [key, value] of Object.entries(row)) {
+        if (typeof value === 'string') {
+          // Normalize the string to ensure proper UTF-8 encoding
+          encodedRow[key] = value.normalize('NFC');
+        } else {
+          encodedRow[key] = value;
+        }
+      }
+      return encodedRow;
+    });
     
     return NextResponse.json({
       success: true,
-      data: result.rows as CityInsight[],
-      count: result.rows.length,
+      data: encodedData as CityInsight[],
+      count: encodedData.length,
       // Include metadata about data range
       metadata: {
         date_filter: targetDate ? targetDate.toISOString().split('T')[0] : null,

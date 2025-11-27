@@ -67,6 +67,42 @@ function safeInteger(value) {
     return isNaN(parsed) ? null : parsed;
 }
 
+// Helper function to parse age values (handles both numeric and age group strings like "Age18-60")
+function safeAge(value) {
+    if (value === null || value === undefined || value === '') {
+        return null;
+    }
+    
+    // Try direct integer parsing first
+    const directParsed = parseInt(value);
+    if (!isNaN(directParsed) && directParsed > 0) {
+        return directParsed;
+    }
+    
+    // Try to parse age group strings like "Age18-60", "Age18-30", etc.
+    const ageGroupMatch = value.toString().match(/Age(\d+)-(\d+)/i);
+    if (ageGroupMatch) {
+        const minAge = parseInt(ageGroupMatch[1]);
+        const maxAge = parseInt(ageGroupMatch[2]);
+        if (!isNaN(minAge) && !isNaN(maxAge) && minAge > 0 && maxAge > 0) {
+            // Return the midpoint of the age range
+            return Math.round((minAge + maxAge) / 2);
+        }
+    }
+    
+    // Try other common age group formats
+    const otherMatch = value.toString().match(/(\d+)-(\d+)/);
+    if (otherMatch) {
+        const minAge = parseInt(otherMatch[1]);
+        const maxAge = parseInt(otherMatch[2]);
+        if (!isNaN(minAge) && !isNaN(maxAge) && minAge > 0 && maxAge > 0) {
+            return Math.round((minAge + maxAge) / 2);
+        }
+    }
+    
+    return null;
+}
+
 // Helper function to clean string values
 function cleanString(value) {
     if (value === null || value === undefined) {
@@ -75,15 +111,61 @@ function cleanString(value) {
     return value.toString().trim() || null;
 }
 
-// Read CSV file and return parsed data
+// Read CSV file and return parsed data with encoding detection
 async function readCSV(filePath) {
     return new Promise((resolve, reject) => {
         const results = [];
-        fs.createReadStream(filePath)
-            .pipe(csv())
-            .on('data', (data) => results.push(data))
-            .on('end', () => resolve(results))
-            .on('error', reject);
+        
+        // Try UTF-8 first, then fallback to Latin-1 if needed
+        function tryRead(encoding) {
+            const stream = fs.createReadStream(filePath, { encoding: encoding });
+            const csvStream = stream.pipe(csv({
+                skipEmptyLines: true,
+                skipLinesWithError: false,
+            }));
+            
+            csvStream
+                .on('data', (data) => {
+                    // Ensure all string values are properly decoded
+                    const decodedData = {};
+                    for (const [key, value] of Object.entries(data)) {
+                        if (typeof value === 'string') {
+                            // Normalize the string to ensure proper UTF-8 encoding
+                            decodedData[key] = value.normalize('NFC');
+                        } else {
+                            decodedData[key] = value;
+                        }
+                    }
+                    results.push(decodedData);
+                })
+                .on('end', () => {
+                    if (VERBOSE && encoding !== 'utf8') {
+                        log(`Read ${filePath} with encoding: ${encoding}`);
+                    }
+                    resolve(results);
+                })
+                .on('error', (error) => {
+                    if (encoding === 'utf8') {
+                        // Try Latin-1 as fallback
+                        results.length = 0;
+                        tryRead('latin1');
+                    } else {
+                        reject(error);
+                    }
+                });
+                
+            stream.on('error', (error) => {
+                if (encoding === 'utf8') {
+                    // Try Latin-1 as fallback
+                    results.length = 0;
+                    tryRead('latin1');
+                } else {
+                    reject(error);
+                }
+            });
+        }
+        
+        tryRead('utf8');
     });
 }
 
@@ -98,6 +180,8 @@ class DatabaseAggregator {
     async initialize() {
         log('Initializing database connection...');
         try {
+            // Ensure UTF-8 encoding for the connection
+            await pool.query("SET client_encoding TO 'UTF8'");
             await pool.query('SELECT 1');
             log('Database connection successful');
             
@@ -506,7 +590,7 @@ class DatabaseAggregator {
                     run_red_light: safeBoolean(row.run_red_light),
                     crosswalk_use_or_not: safeBoolean(row.crosswalk_use_or_not),
                     gender: cleanString(row.gender),
-                    age: safeInteger(row.age),
+                    age: safeAge(row.age),
                     phone_using: safeBoolean(row.phone_using),
                     backpack: safeBoolean(row.backpack),
                     umbrella: safeBoolean(row.umbrella),

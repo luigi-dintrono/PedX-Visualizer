@@ -48,10 +48,10 @@ function balanceCategories(relationships: Relationship[], maxPerCategory: number
 
 export async function GET(
   request: NextRequest,
-  { params }: { params: { metric: string } }
+  { params }: { params: Promise<{ metric: string }> }
 ) {
   try {
-    const metric = params.metric;
+    const { metric } = await params;
     const relationships: Relationship[] = [];
 
     // ===== WEATHER/DAYTIME RELATIONSHIPS =====
@@ -60,13 +60,13 @@ export async function GET(
       const csvContent = fs.readFileSync(weatherDaytimePath, 'utf-8');
       const records = parse(csvContent, { columns: true, skip_empty_lines: true });
 
-      // Calculate baselines from data
+      // Calculate baselines from data, excluding 0.00% values
       const riskyProbs = records
         .map((r: any) => parseFloat(r.risky_crossing_prob))
-        .filter(v => !isNaN(v));
+        .filter(v => !isNaN(v) && v > 0.0001); // Exclude 0.00% values
       const redLightProbs = records
         .map((r: any) => parseFloat(r.run_red_light_prob))
-        .filter(v => !isNaN(v));
+        .filter(v => !isNaN(v) && v > 0.0001); // Exclude 0.00% values
       
       const baselineRisky = calculateBaseline(riskyProbs) * 100; // Convert to percentage
       const baselineRedLight = calculateBaseline(redLightProbs) * 100;
@@ -75,8 +75,15 @@ export async function GET(
         const rec = record as any;
         const weather = rec.weather;
         const daytime = rec.daytime === '1' ? 'Day' : 'Night';
-        const riskyProb = parseFloat(rec.risky_crossing_prob) * 100; // Convert to percentage
-        const redLightProb = parseFloat(rec.run_red_light_prob) * 100;
+        const riskyProbRaw = parseFloat(rec.risky_crossing_prob);
+        const redLightProbRaw = parseFloat(rec.run_red_light_prob);
+        
+        // Skip records with 0.00% values
+        if (metric === 'risky_crossing' && (isNaN(riskyProbRaw) || riskyProbRaw <= 0.0001)) continue;
+        if (metric === 'run_red_light' && (isNaN(redLightProbRaw) || redLightProbRaw <= 0.0001)) continue;
+        
+        const riskyProb = riskyProbRaw * 100; // Convert to percentage
+        const redLightProb = redLightProbRaw * 100;
 
         if (metric === 'risky_crossing' && !isNaN(riskyProb)) {
           const effectSize = riskyProb - baselineRisky;
@@ -118,18 +125,22 @@ export async function GET(
       const csvContent = fs.readFileSync(genderStatsPath, 'utf-8');
       const records = parse(csvContent, { columns: true, skip_empty_lines: true });
 
-      // Calculate baseline from data
+      // Calculate baseline from data, excluding 0.00% values
       const riskyProbs = records
         .map((r: any) => parseFloat(r.risky_crossing))
-        .filter(v => !isNaN(v));
+        .filter(v => !isNaN(v) && v > 0.0001); // Exclude 0.00% values
       const baselineRisky = calculateBaseline(riskyProbs) * 100; // Convert to percentage
 
       for (const record of records) {
         const rec = record as any;
         const gender = rec.gender;
+        const riskyProbRaw = parseFloat(rec.risky_crossing);
+        
+        // Skip records with 0.00% values
+        if (metric === 'risky_crossing' && (isNaN(riskyProbRaw) || riskyProbRaw <= 0.0001)) continue;
         
         if (metric === 'risky_crossing' && rec.risky_crossing) {
-          const riskyProb = parseFloat(rec.risky_crossing) * 100;
+          const riskyProb = riskyProbRaw * 100;
           const effectSize = riskyProb - baselineRisky;
           const direction = effectSize > 0 ? '↑' : '↓';
 
@@ -153,13 +164,13 @@ export async function GET(
       const csvContent = fs.readFileSync(ageStatsPath, 'utf-8');
       const records = parse(csvContent, { columns: true, skip_empty_lines: true });
 
-      // Calculate baseline from data
+      // Calculate baseline from data, excluding 0.00% values
       const riskyProbs = records
         .map((r: any) => parseFloat(r.risky_crossing))
-        .filter(v => !isNaN(v));
+        .filter(v => !isNaN(v) && v > 0.0001); // Exclude 0.00% values
       const redLightProbs = records
         .map((r: any) => parseFloat(r.run_red_light))
-        .filter(v => !isNaN(v));
+        .filter(v => !isNaN(v) && v > 0.0001); // Exclude 0.00% values
       
       const baselineRisky = calculateBaseline(riskyProbs) * 100;
       const baselineRedLight = calculateBaseline(redLightProbs) * 100;
@@ -178,19 +189,23 @@ export async function GET(
 
         const riskyProb = parseFloat(rec.risky_crossing);
         const redLightProb = parseFloat(rec.run_red_light);
+        
+        // Skip records with 0.00% values
+        const hasValidRisky = !isNaN(riskyProb) && riskyProb > 0.0001;
+        const hasValidRedLight = !isNaN(redLightProb) && redLightProb > 0.0001;
 
         if (age >= 18 && age <= 30) {
           ageGroups['Young (18-30)'].ages.push(age);
-          if (!isNaN(riskyProb)) ageGroups['Young (18-30)'].risky.push(riskyProb);
-          if (!isNaN(redLightProb)) ageGroups['Young (18-30)'].redLight.push(redLightProb);
+          if (hasValidRisky) ageGroups['Young (18-30)'].risky.push(riskyProb);
+          if (hasValidRedLight) ageGroups['Young (18-30)'].redLight.push(redLightProb);
         } else if (age >= 31 && age <= 50) {
           ageGroups['Middle (31-50)'].ages.push(age);
-          if (!isNaN(riskyProb)) ageGroups['Middle (31-50)'].risky.push(riskyProb);
-          if (!isNaN(redLightProb)) ageGroups['Middle (31-50)'].redLight.push(redLightProb);
+          if (hasValidRisky) ageGroups['Middle (31-50)'].risky.push(riskyProb);
+          if (hasValidRedLight) ageGroups['Middle (31-50)'].redLight.push(redLightProb);
         } else if (age >= 51) {
           ageGroups['Older (51+)'].ages.push(age);
-          if (!isNaN(riskyProb)) ageGroups['Older (51+)'].risky.push(riskyProb);
-          if (!isNaN(redLightProb)) ageGroups['Older (51+)'].redLight.push(redLightProb);
+          if (hasValidRisky) ageGroups['Older (51+)'].risky.push(riskyProb);
+          if (hasValidRedLight) ageGroups['Older (51+)'].redLight.push(redLightProb);
         }
       }
 
@@ -238,13 +253,13 @@ export async function GET(
       const csvContent = fs.readFileSync(clothingStatsPath, 'utf-8');
       const records = parse(csvContent, { columns: true, skip_empty_lines: true });
 
-      // Calculate baseline from data
+      // Calculate baseline from data, excluding 0.00% values
       const riskyRates = records
         .map((r: any) => parseFloat(r['risky_crossing_rate(%)']))
-        .filter(v => !isNaN(v));
+        .filter(v => !isNaN(v) && v > 0.01); // Exclude 0.00% values (already in percentage)
       const redLightRates = records
         .map((r: any) => parseFloat(r['run_red_light_rate(%)']))
-        .filter(v => !isNaN(v));
+        .filter(v => !isNaN(v) && v > 0.01); // Exclude 0.00% values (already in percentage)
       
       const baselineRisky = calculateBaseline(riskyRates);
       const baselineRedLight = calculateBaseline(redLightRates);
@@ -254,6 +269,10 @@ export async function GET(
         const clothingType = rec.clothing_type;
         const riskyRate = parseFloat(rec['risky_crossing_rate(%)']);
         const redLightRate = parseFloat(rec['run_red_light_rate(%)']);
+        
+        // Skip records with 0.00% values
+        if (metric === 'risky_crossing' && (isNaN(riskyRate) || riskyRate <= 0.01)) continue;
+        if (metric === 'run_red_light' && (isNaN(redLightRate) || redLightRate <= 0.01)) continue;
 
         if (metric === 'risky_crossing' && !isNaN(riskyRate)) {
           const effectSize = riskyRate - baselineRisky;
@@ -295,13 +314,13 @@ export async function GET(
       const csvContent = fs.readFileSync(phoneStatsPath, 'utf-8');
       const records = parse(csvContent, { columns: true, skip_empty_lines: true });
 
-      // Calculate baseline from all records
+      // Calculate baseline from all records, excluding 0.00% values
       const allRiskyRates = records
         .map((r: any) => parseFloat(r['risky_crossing_rate(%)']))
-        .filter(v => !isNaN(v));
+        .filter(v => !isNaN(v) && v > 0.01); // Exclude 0.00% values (already in percentage)
       const allRedLightRates = records
         .map((r: any) => parseFloat(r['run_red_light_rate(%)']))
-        .filter(v => !isNaN(v));
+        .filter(v => !isNaN(v) && v > 0.01); // Exclude 0.00% values (already in percentage)
       const baselineRisky = calculateBaseline(allRiskyRates);
       const baselineRedLight = calculateBaseline(allRedLightRates);
 
@@ -310,6 +329,10 @@ export async function GET(
         const accessory = rec.accessory;
         const riskyRate = parseFloat(rec['risky_crossing_rate(%)']);
         const redLightRate = parseFloat(rec['run_red_light_rate(%)']);
+        
+        // Skip records with 0.00% values
+        if (metric === 'risky_crossing' && (isNaN(riskyRate) || riskyRate <= 0.01)) continue;
+        if (metric === 'run_red_light' && (isNaN(redLightRate) || redLightRate <= 0.01)) continue;
 
         if (metric === 'risky_crossing' && !isNaN(riskyRate)) {
           const effectSize = riskyRate - baselineRisky;
@@ -363,12 +386,13 @@ export async function GET(
       }
 
       // Use available columns: risky_crossing_rate and run_red_light_rate
+      // Exclude 0.00% values when calculating baselines
       const riskyRates = records
         .map((r: any) => parseFloat(r['risky_crossing_rate(%)']))
-        .filter(v => !isNaN(v));
+        .filter(v => !isNaN(v) && v > 0.01); // Exclude 0.00% values (already in percentage)
       const redLightRates = records
         .map((r: any) => parseFloat(r['run_red_light_rate(%)']))
-        .filter(v => !isNaN(v));
+        .filter(v => !isNaN(v) && v > 0.01); // Exclude 0.00% values (already in percentage)
       
       const baselineRisky = calculateBaseline(riskyRates);
       const baselineRedLight = calculateBaseline(redLightRates);
@@ -378,6 +402,10 @@ export async function GET(
         const vehicleType = rec.vehicle_type;
         const riskyRate = parseFloat(rec['risky_crossing_rate(%)']);
         const redLightRate = parseFloat(rec['run_red_light_rate(%)']);
+        
+        // Skip records with 0.00% values
+        if (metric === 'risky_crossing' && (isNaN(riskyRate) || riskyRate <= 0.01)) continue;
+        if (metric === 'run_red_light' && (isNaN(redLightRate) || redLightRate <= 0.01)) continue;
 
         if (metric === 'risky_crossing' && !isNaN(riskyRate)) {
           const effectSize = riskyRate - baselineRisky;

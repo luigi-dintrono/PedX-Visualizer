@@ -118,7 +118,7 @@ const DEFAULT_GRANULAR_FILTERS: GranularFilters = {
   bottomWear: [],
   dressType: [],
   vehiclePresence: null,
-  car: [0, 1000],
+  car: [0, 500],
   bus: [0, 100],
   truck: [0, 100],
   motorbike: [0, 200],
@@ -138,8 +138,8 @@ export function FilterProvider({ children }: { children: React.ReactNode }) {
   const refreshData = async () => {
     setLoading(true)
     try {
-      // Fetch cities data
-      const citiesResponse = await fetch('/api/cities')
+      // Fetch cities data - request all cities (no limit or high limit)
+      const citiesResponse = await fetch('/api/cities?limit=10000')
       const citiesResult = await citiesResponse.json()
       if (citiesResult.success) {
         setCityData(citiesResult.data)

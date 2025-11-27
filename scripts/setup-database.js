@@ -6,10 +6,14 @@ const path = require('path');
 async function setupDatabase() {
   const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
+    client_encoding: 'UTF8',
   });
 
   try {
     console.log('Setting up CoreGlobalCrossingData database...');
+    
+    // Ensure UTF-8 encoding
+    await pool.query("SET client_encoding TO 'UTF8'");
     
     // Read and execute schema
     const schemaPath = path.join(__dirname, '../database/schema.sql');
