@@ -139,8 +139,18 @@ export function FilterSidebar() {
   // }
 
 
-  // Get unique cities from the data
-  const uniqueCities = Array.from(new Set(cityData.map(city => city.city))).sort()
+  // Get unique cities from the data, excluding cities with 0 videos or 0 pedestrians
+  const uniqueCities = Array.from(
+    new Set(
+      cityData
+        .filter(city => {
+          const videos = typeof city.total_videos === 'number' ? city.total_videos : (parseInt(String(city.total_videos)) || 0);
+          const pedestrians = typeof city.total_pedestrians === 'number' ? city.total_pedestrians : (parseInt(String(city.total_pedestrians)) || 0);
+          return videos > 0 && pedestrians > 0;
+        })
+        .map(city => city.city)
+    )
+  ).sort()
 
   const handleCitySelect = (cityName: string) => {
     const newSelectedCity = cityName === "all" ? null : cityName
@@ -395,6 +405,7 @@ export function FilterSidebar() {
                         </div>
                       </div>
                       
+                      {/* Traffic Mortality filter - commented out
                       <div>
                         <label className="text-xs font-medium text-muted-foreground">Traffic Mortality (per 100k)</label>
                         <div className="px-2">
@@ -412,7 +423,9 @@ export function FilterSidebar() {
                           </div>
                         </div>
                       </div>
+                      */}
                       
+                      {/* Median Age filter - commented out
                       <div>
                         <label className="text-xs font-medium text-muted-foreground">Median Age</label>
                         <div className="px-2">
@@ -430,7 +443,9 @@ export function FilterSidebar() {
                           </div>
                         </div>
                       </div>
+                      */}
                       
+                      {/* Gini Index filter - commented out
                       <div>
                         <label className="text-xs font-medium text-muted-foreground">Gini Index (Inequality)</label>
                         <div className="px-2">
@@ -448,6 +463,7 @@ export function FilterSidebar() {
                           </div>
                         </div>
                       </div>
+                      */}
                     </div>
                   </AccordionContent>
                 </AccordionItem>
@@ -499,6 +515,7 @@ export function FilterSidebar() {
                         </div>
                       </div>
                       
+                      {/* Crosswalk Present and Sidewalk Present filters - commented out
                       <div className="grid grid-cols-2 gap-2">
                         <div className="flex items-center space-x-2">
                           <Switch
@@ -521,6 +538,7 @@ export function FilterSidebar() {
                           <label htmlFor="sidewalk" className="text-xs">Sidewalk Present</label>
                         </div>
                       </div>
+                      */}
                       
                       <div>
                         <label className="text-xs font-medium text-muted-foreground">Avg Road Width (m)</label>
@@ -540,6 +558,7 @@ export function FilterSidebar() {
                         </div>
                       </div>
                       
+                      {/* Potholes, Cracks, and Police filters - commented out
                       <div className="grid grid-cols-3 gap-1 text-xs">
                         <div className="flex items-center space-x-1">
                           <Switch
@@ -566,6 +585,7 @@ export function FilterSidebar() {
                           <label htmlFor="police">Police</label>
                         </div>
                       </div>
+                      */}
                     </div>
                   </AccordionContent>
                 </AccordionItem>
@@ -595,6 +615,7 @@ export function FilterSidebar() {
                           />
                           <label htmlFor="redlight">Run Red Light</label>
                         </div>
+                        {/* Crosswalk Use filter - commented out
                         <div className="flex items-center space-x-1">
                           <Switch
                             id="crosswalk-use"
@@ -603,8 +624,10 @@ export function FilterSidebar() {
                           />
                           <label htmlFor="crosswalk-use">Crosswalk Use</label>
                         </div>
+                        */}
                       </div>
                       
+                      {/* Nearby Pedestrians filter - commented out
                       <div>
                         <label className="text-xs font-medium text-muted-foreground">Nearby Pedestrians</label>
                         <div className="px-2">
@@ -622,6 +645,7 @@ export function FilterSidebar() {
                           </div>
                         </div>
                       </div>
+                      */}
                       
                       <div>
                         <label className="text-xs font-medium text-muted-foreground">Crossing Speed (m/s)</label>
@@ -705,6 +729,7 @@ export function FilterSidebar() {
                         </div>
                       </div>
                       
+                      {/* Literacy Rate filter - commented out
                       <div>
                         <label className="text-xs font-medium text-muted-foreground">Literacy Rate (%)</label>
                         <div className="px-2">
@@ -722,7 +747,9 @@ export function FilterSidebar() {
                           </div>
                         </div>
                       </div>
+                      */}
                       
+                      {/* Avg Height filter - commented out
                       <div>
                         <label className="text-xs font-medium text-muted-foreground">Avg Height (cm)</label>
                         <div className="px-2">
@@ -740,6 +767,7 @@ export function FilterSidebar() {
                           </div>
                         </div>
                       </div>
+                      */}
                         </div>
                       </AccordionContent>
                     </AccordionItem>
@@ -825,22 +853,13 @@ export function FilterSidebar() {
                 </AccordionItem>
 
                 {/* Vehicles */}
-                <AccordionItem value="vehicles">
+                {/* <AccordionItem value="vehicles">
                   <AccordionTrigger className="text-sm flex items-center gap-2">
                     <Car className="w-4 h-4" />
                     Vehicles
                   </AccordionTrigger>
                   <AccordionContent className="space-y-4">
                     <div className="space-y-3">
-                      <div className="flex items-center space-x-2">
-                        <Switch
-                          id="vehicle-presence"
-                          checked={filters.vehiclePresence === true}
-                          onCheckedChange={(checked) => updateFilter('vehiclePresence', checked ? true : null)}
-                        />
-                        <label htmlFor="vehicle-presence" className="text-xs">Vehicle Presence</label>
-                      </div>
-                      
                       <div>
                         <label className="text-xs font-medium text-muted-foreground">Car Count</label>
                         <div className="px-2">
@@ -848,7 +867,7 @@ export function FilterSidebar() {
                             value={filters.car}
                             onValueChange={(value) => updateFilter('car', value)}
                             min={0}
-                            max={1000}
+                            max={500}
                             step={10}
                             className="w-full"
                           />
@@ -932,7 +951,7 @@ export function FilterSidebar() {
                       </div>
                     </div>
                   </AccordionContent>
-                </AccordionItem>
+                </AccordionItem> */}
                 </Accordion>
               </div>
 

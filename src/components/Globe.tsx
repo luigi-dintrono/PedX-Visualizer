@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, useMemo } from 'react';
 import { useFilter } from '@/contexts/FilterContext';
 import { CityGlobeData } from '@/types/database';
 import type * as Cesium from 'cesium';
@@ -222,6 +222,52 @@ export default function Globe() {
     setSelectedCity,
   } = useFilter();
 
+  // Create a stable reference for vehicle filters to ensure useEffect detects changes
+  // Convert arrays to strings for reliable change detection
+  const vehicleFiltersKey = useMemo(() => 
+    JSON.stringify({
+      car: granularFilters.car,
+      bus: granularFilters.bus,
+      truck: granularFilters.truck,
+      motorbike: granularFilters.motorbike,
+      bicycle: granularFilters.bicycle,
+    }), 
+    [
+      granularFilters.car[0],
+      granularFilters.car[1],
+      granularFilters.bus[0],
+      granularFilters.bus[1],
+      granularFilters.truck[0],
+      granularFilters.truck[1],
+      granularFilters.motorbike[0],
+      granularFilters.motorbike[1],
+      granularFilters.bicycle[0],
+      granularFilters.bicycle[1],
+    ]
+  );
+
+  // Create a stable reference for clothing & accessories filters to ensure useEffect detects changes
+  const clothingFiltersKey = useMemo(() => 
+    JSON.stringify({
+      phoneUse: granularFilters.phoneUse,
+      backpack: granularFilters.backpack,
+      umbrella: granularFilters.umbrella,
+      handbag: granularFilters.handbag,
+      suitcase: granularFilters.suitcase,
+      shirtType: granularFilters.shirtType,
+      bottomWear: granularFilters.bottomWear,
+    }), 
+    [
+      granularFilters.phoneUse,
+      granularFilters.backpack,
+      granularFilters.umbrella,
+      granularFilters.handbag,
+      granularFilters.suitcase,
+      granularFilters.shirtType.join(','),
+      granularFilters.bottomWear.join(','),
+    ]
+  );
+
   // Fetch videos for selected city
   const fetchCityVideos = useCallback(async (cityName: string): Promise<VideoData[]> => {
     try {
@@ -331,13 +377,35 @@ export default function Globe() {
         params.append('suitcase', 'true');
       }
 
-      // Vehicles
-      if (granularFilters.vehiclePresence === true) {
-        params.append('vehiclePresence', 'true');
-      }
+      // Vehicle count filters - always send the current values
+      params.append('minCar', granularFilters.car[0].toString());
+      params.append('maxCar', granularFilters.car[1].toString());
+      
+      params.append('minBus', granularFilters.bus[0].toString());
+      params.append('maxBus', granularFilters.bus[1].toString());
+      
+      params.append('minTruck', granularFilters.truck[0].toString());
+      params.append('maxTruck', granularFilters.truck[1].toString());
+      
+      params.append('minMotorbike', granularFilters.motorbike[0].toString());
+      params.append('maxMotorbike', granularFilters.motorbike[1].toString());
+      
+      params.append('minBicycle', granularFilters.bicycle[0].toString());
+      params.append('maxBicycle', granularFilters.bicycle[1].toString());
+      
+      console.log('[Globe] Vehicle filters:', {
+        car: granularFilters.car,
+        bus: granularFilters.bus,
+        truck: granularFilters.truck,
+        motorbike: granularFilters.motorbike,
+        bicycle: granularFilters.bicycle
+      });
+      
+      // Add limit parameter to fetch more cities (increased from default 100)
+      params.append('limit', '1000');
       
       const queryString = params.toString();
-      const url = queryString ? `/api/data?${queryString}` : '/api/data';
+      const url = `/api/data?${queryString}`;
       
       const response = await fetch(url);
       const result = await response.json();
@@ -346,7 +414,27 @@ export default function Globe() {
       console.error('Error fetching global data:', error);
       return [];
     }
-  }, [granularFilters]);
+  }, [
+    granularFilters,
+    granularFilters.car,
+    granularFilters.bus,
+    granularFilters.truck,
+    granularFilters.motorbike,
+    granularFilters.bicycle,
+    granularFilters.phoneUse,
+    granularFilters.backpack,
+    granularFilters.umbrella,
+    granularFilters.handbag,
+    granularFilters.suitcase,
+    granularFilters.shirtType.length,
+    granularFilters.shirtType[0],
+    granularFilters.shirtType[1],
+    granularFilters.shirtType[2],
+    granularFilters.bottomWear.length,
+    granularFilters.bottomWear[0],
+    granularFilters.bottomWear[1],
+    granularFilters.bottomWear[2],
+  ]);
 
   // Scene mode controls
   const morphTo2D = useCallback(async () => {
@@ -1038,19 +1126,44 @@ export default function Globe() {
     // Debounce updates to prevent flickering when filters change rapidly
     const timeoutId = setTimeout(async () => {
       try {
+        console.log('[Globe] Updating heatmap - useEffect triggered', {
+          selectedMetrics,
+          vehicleFilters: {
+            car: granularFilters.car,
+            bus: granularFilters.bus,
+            truck: granularFilters.truck,
+            motorbike: granularFilters.motorbike,
+            bicycle: granularFilters.bicycle
+          },
+          vehicleFiltersKey,
+          timestamp: new Date().toISOString()
+        });
         const data = await fetchGlobalData();
+        console.log('[Globe] Fetched data count:', data.length);
+        if (data.length === 0) {
+          console.warn('[Globe] No data returned from API - check filters');
+        }
         const Cesium = await import('cesium');
         
         // Use the first selected metric for heatmap
         const metricType = selectedMetrics[0];
+        console.log('[Globe] Creating heatmap with', data.length, 'cities for metric:', metricType);
         await createHeatmap(data, metricType, Cesium, setSelectedCity);
+        console.log('[Globe] Heatmap created successfully');
       } catch (error) {
-        console.error('Error updating heatmap:', error);
+        console.error('[Globe] Error updating heatmap:', error);
       }
     }, 300); // 300ms debounce
 
     return () => clearTimeout(timeoutId);
-  }, [selectedMetrics, granularFilters, createHeatmap, fetchGlobalData, setSelectedCity]);
+  }, [
+    selectedMetrics, 
+    vehicleFiltersKey,
+    clothingFiltersKey,
+    createHeatmap, 
+    fetchGlobalData, 
+    setSelectedCity
+  ]);
 
   // Handle city selection changes and load video markers
   useEffect(() => {
