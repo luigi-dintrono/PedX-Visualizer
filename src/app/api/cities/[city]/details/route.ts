@@ -1,6 +1,51 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { pool } from '@/lib/database';
 
+interface CityRankings {
+  speed_rank?: number;
+  risky_rank?: number;
+  red_light_rank?: number;
+  total_cities_for_speed?: number;
+}
+
+interface RiskFactorRow {
+  factor?: string;
+  risk_increase?: number;
+  sample_size?: number;
+}
+
+interface AgeRow {
+  avg_age?: number;
+}
+
+interface EnvironmentRow {
+  main_weather?: string;
+  percentage?: number;
+}
+
+interface DaytimeRow {
+  daytime?: string;
+  percentage?: number;
+}
+
+interface GenderRow {
+  gender?: string;
+  percentage?: number;
+}
+
+interface AgeGroupRow {
+  age_group?: string;
+  count?: number;
+  risky_rate?: number;
+  red_light_rate?: number;
+}
+
+interface VehicleRow {
+  vehicle_type?: string;
+  count?: number;
+  percentage?: number;
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ city: string }> }
@@ -27,7 +72,7 @@ export async function GET(
     const cityId = cityResult.rows[0].id;
 
     // 1. Get Rankings from mv_city_insights (with fallback to direct calculation)
-    let rankings = {};
+    let rankings: CityRankings = {};
     try {
       const rankingsResult = await pool.query(`
         SELECT 
@@ -78,8 +123,8 @@ export async function GET(
     }
 
     // 2. Get Environment data (weather and daytime breakdown)
-    let environmentResult = { rows: [] };
-    let daytimeResult = { rows: [] };
+    let environmentResult: { rows: EnvironmentRow[] } = { rows: [] };
+    let daytimeResult: { rows: DaytimeRow[] } = { rows: [] };
     
     try {
       // Filter out time-based weather labels (sunrise, sunset) and get actual weather
@@ -146,8 +191,8 @@ export async function GET(
     }
 
     // 3. Get Demographics (gender and age breakdown)
-    let genderResult = { rows: [] };
-    let ageResult = { rows: [] };
+    let genderResult: { rows: GenderRow[] } = { rows: [] };
+    let ageResult: { rows: AgeGroupRow[] } = { rows: [] };
     
     try {
       genderResult = await pool.query(`
@@ -205,7 +250,7 @@ export async function GET(
     // 4. Get Vehicles breakdown
     // Calculate vehicle type distribution - what percentage of all vehicle observations are each type
     // This ensures percentages add up to 100%
-    let vehiclesResult = { rows: [] };
+    let vehiclesResult: { rows: VehicleRow[] } = { rows: [] };
     
     try {
       // Count total vehicle observations (sum of all vehicle types)
@@ -295,7 +340,7 @@ export async function GET(
     }
 
     // 5. Get risk factors (top factors that increase risk)
-    let riskFactorsResult = { rows: [] };
+    let riskFactorsResult: { rows: RiskFactorRow[] } = { rows: [] };
     
     try {
       riskFactorsResult = await pool.query(`
@@ -315,7 +360,7 @@ export async function GET(
     }
 
     // 6. Get average pedestrian age - try from v_city_summary first, then calculate directly
-    let avgAgeResult = { rows: [] };
+    let avgAgeResult: { rows: AgeRow[] } = { rows: [] };
     try {
       // First try to get from v_city_summary (which already has avg_pedestrian_age calculated)
       const citySummaryResult = await pool.query(`
@@ -345,9 +390,10 @@ export async function GET(
                            ageRow.age_group === '18-30' ? 24 : 
                            ageRow.age_group === '31-50' ? 40.5 : 
                            ageRow.age_group === '50+' ? 60 : 0;
-            if (ageMid > 0 && ageRow.count > 0) {
-              weightedSum += ageMid * ageRow.count;
-              totalCount += ageRow.count;
+            const count = ageRow.count || 0;
+            if (ageMid > 0 && count > 0) {
+              weightedSum += ageMid * count;
+              totalCount += count;
             }
           }
           if (totalCount > 0) {
@@ -368,16 +414,16 @@ export async function GET(
     const response = {
       rankings: {
         crossing_speed: {
-          rank: rankings.speed_rank ? parseInt(rankings.speed_rank) : null,
-          total_cities: rankings.total_cities_for_speed ? parseInt(rankings.total_cities_for_speed) : null
+          rank: rankings.speed_rank ? Number(rankings.speed_rank) : null,
+          total_cities: rankings.total_cities_for_speed ? Number(rankings.total_cities_for_speed) : null
         },
         risky_crossing: {
-          rank: rankings.risky_rank ? parseInt(rankings.risky_rank) : null,
-          total_cities: rankings.total_cities_for_speed ? parseInt(rankings.total_cities_for_speed) : null
+          rank: rankings.risky_rank ? Number(rankings.risky_rank) : null,
+          total_cities: rankings.total_cities_for_speed ? Number(rankings.total_cities_for_speed) : null
         },
         run_red_light: {
-          rank: rankings.red_light_rank ? parseInt(rankings.red_light_rank) : null,
-          total_cities: rankings.total_cities_for_speed ? parseInt(rankings.total_cities_for_speed) : null
+          rank: rankings.red_light_rank ? Number(rankings.red_light_rank) : null,
+          total_cities: rankings.total_cities_for_speed ? Number(rankings.total_cities_for_speed) : null
         }
       },
       environment: {
@@ -408,7 +454,7 @@ export async function GET(
       risk_factors: (riskFactorsResult.rows || []).map(row => ({
         factor: row.factor || 'Unknown',
         risk_increase: row.risk_increase ? parseFloat(Number(row.risk_increase).toFixed(1)) : 0,
-        sample_size: row.sample_size ? parseInt(row.sample_size) : 0
+        sample_size: row.sample_size ? Number(row.sample_size) : 0
       })),
       avg_pedestrian_age: avgAgeResult.rows[0]?.avg_age ? parseFloat(Number(avgAgeResult.rows[0].avg_age).toFixed(1)) : null
     };
