@@ -342,7 +342,7 @@ export function InfoSidebar() {
 
     // Normalize values: if city value is < 1 and metricType is rate, it's a ratio (0-1), convert to percentage
     let cityNormalized = cityNum
-    let globalNormalized = globalValue
+    const globalNormalized = globalValue
     
     if (metricType === 'rate') {
       // If city value is less than 1, it's likely a ratio, convert to percentage

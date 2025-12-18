@@ -376,7 +376,7 @@ export async function GET(
 
       // Check if crossing_speed data exists in crossing_stats.csv
       const crossingStatsPath = path.join(process.cwd(), 'summary_data', 'crossing_stats.csv');
-      let speedData: Record<string, number> = {};
+      const speedData: Record<string, number> = {};
       
       if (fs.existsSync(crossingStatsPath) && metric === 'crossing_speed') {
         const crossingContent = fs.readFileSync(crossingStatsPath, 'utf-8');
