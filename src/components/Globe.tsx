@@ -585,14 +585,14 @@ export default function Globe() {
             image: createRadialGradientCanvas(color),
             transparent: true,
           }),
-          heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+          heightReference: new Cesium.ConstantProperty(Cesium.HeightReference.CLAMP_TO_GROUND),
           classificationType: Cesium.ClassificationType.TERRAIN,
         },
         // Central marker (billboard) for better visibility and to avoid terrain clipping
         billboard: {
           image: createDotCanvas(color),
           scale: 1.0,
-          heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND,
+          heightReference: new Cesium.ConstantProperty(Cesium.HeightReference.RELATIVE_TO_GROUND),
           // Pull forward in eye space to avoid local terrain clipping while still occluding behind globe
           eyeOffset: new Cesium.Cartesian3(0, 0, -5000),
           disableDepthTestDistance: 1000000,
@@ -758,7 +758,7 @@ export default function Globe() {
         billboard: {
           image: createVideoDotCanvas(),
           scale: 1.0,
-          heightReference: Cesium.HeightReference.RELATIVE_TO_GROUND,
+          heightReference: new Cesium.ConstantProperty(Cesium.HeightReference.RELATIVE_TO_GROUND),
           eyeOffset: new Cesium.Cartesian3(0, 0, -1000),
           disableDepthTestDistance: 1000000,
           verticalOrigin: Cesium.VerticalOrigin.CENTER,
@@ -1037,20 +1037,20 @@ export default function Globe() {
             entities.forEach((ent: Cesium.Entity) => {
               if (ent.billboard) {
                 if (mode === Cesium.SceneMode.SCENE2D) {
-                  ent.billboard.heightReference = Cesium.HeightReference.NONE;
-                  ent.billboard.eyeOffset = new Cesium.Cartesian3(0, 0, 0);
-                  ent.billboard.disableDepthTestDistance = Number.POSITIVE_INFINITY;
+                  ent.billboard.heightReference = new Cesium.ConstantProperty(Cesium.HeightReference.NONE);
+                  ent.billboard.eyeOffset = new Cesium.ConstantProperty(new Cesium.Cartesian3(0, 0, 0));
+                  ent.billboard.disableDepthTestDistance = new Cesium.ConstantProperty(Number.POSITIVE_INFINITY);
                 } else {
-                  ent.billboard.heightReference = Cesium.HeightReference.RELATIVE_TO_GROUND;
-                  ent.billboard.eyeOffset = new Cesium.Cartesian3(0, 0, -5000);
-                  ent.billboard.disableDepthTestDistance = 1000000;
+                  ent.billboard.heightReference = new Cesium.ConstantProperty(Cesium.HeightReference.RELATIVE_TO_GROUND);
+                  ent.billboard.eyeOffset = new Cesium.ConstantProperty(new Cesium.Cartesian3(0, 0, -5000));
+                  ent.billboard.disableDepthTestDistance = new Cesium.ConstantProperty(1000000);
                 }
               }
               if (ent.label) {
                 if (mode === Cesium.SceneMode.SCENE2D) {
-                  ent.label.disableDepthTestDistance = Number.POSITIVE_INFINITY;
+                  ent.label.disableDepthTestDistance = new Cesium.ConstantProperty(Number.POSITIVE_INFINITY);
                 } else {
-                  ent.label.disableDepthTestDistance = 1000000;
+                  ent.label.disableDepthTestDistance = new Cesium.ConstantProperty(1000000);
                 }
               }
             });
@@ -1062,20 +1062,20 @@ export default function Globe() {
             entities.forEach((ent: Cesium.Entity) => {
               if (ent.billboard) {
                 if (mode === Cesium.SceneMode.SCENE2D) {
-                  ent.billboard.heightReference = Cesium.HeightReference.NONE;
-                  ent.billboard.eyeOffset = new Cesium.Cartesian3(0, 0, 0);
-                  ent.billboard.disableDepthTestDistance = Number.POSITIVE_INFINITY;
+                  ent.billboard.heightReference = new Cesium.ConstantProperty(Cesium.HeightReference.NONE);
+                  ent.billboard.eyeOffset = new Cesium.ConstantProperty(new Cesium.Cartesian3(0, 0, 0));
+                  ent.billboard.disableDepthTestDistance = new Cesium.ConstantProperty(Number.POSITIVE_INFINITY);
                 } else {
-                  ent.billboard.heightReference = Cesium.HeightReference.RELATIVE_TO_GROUND;
-                  ent.billboard.eyeOffset = new Cesium.Cartesian3(0, 0, -1000);
-                  ent.billboard.disableDepthTestDistance = 1000000;
+                  ent.billboard.heightReference = new Cesium.ConstantProperty(Cesium.HeightReference.RELATIVE_TO_GROUND);
+                  ent.billboard.eyeOffset = new Cesium.ConstantProperty(new Cesium.Cartesian3(0, 0, -1000));
+                  ent.billboard.disableDepthTestDistance = new Cesium.ConstantProperty(1000000);
                 }
               }
               if (ent.label) {
                 if (mode === Cesium.SceneMode.SCENE2D) {
-                  ent.label.disableDepthTestDistance = Number.POSITIVE_INFINITY;
+                  ent.label.disableDepthTestDistance = new Cesium.ConstantProperty(Number.POSITIVE_INFINITY);
                 } else {
-                  ent.label.disableDepthTestDistance = 1000000;
+                  ent.label.disableDepthTestDistance = new Cesium.ConstantProperty(1000000);
                 }
               }
             });
