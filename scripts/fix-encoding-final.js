@@ -133,7 +133,7 @@ async function readCSVProperly(filePath) {
                 try {
                     const content = attempt.decode();
                     // Count encoding issues (replacement characters, common corruption patterns)
-                    const issues = (content.match(//g) || []).length + 
+                    const issues = (content.match(/�/g) || []).length + 
                                   (content.match(/[?®¨]/g) || []).length;
                     
                     if (issues < minIssues) {

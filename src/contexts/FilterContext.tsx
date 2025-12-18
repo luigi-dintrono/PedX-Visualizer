@@ -141,8 +141,14 @@ export function FilterProvider({ children }: { children: React.ReactNode }) {
       // Fetch cities data - request all cities (no limit or high limit)
       const citiesResponse = await fetch('/api/cities?limit=10000')
       const citiesResult = await citiesResponse.json()
+      console.log('[FilterContext] API Response:', {
+        success: citiesResult.success,
+        count: citiesResult.count,
+        dataLength: citiesResult.data?.length
+      })
       if (citiesResult.success) {
         setCityData(citiesResult.data)
+        console.log('[FilterContext] setCityData called with', citiesResult.data.length, 'cities')
       }
 
       // Fetch metrics data

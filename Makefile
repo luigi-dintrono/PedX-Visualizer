@@ -343,7 +343,7 @@ db-generate-insights-dry: ## Test insights generation without updating database
 		exit 1; \
 	fi
 
-db-pipeline: db-aggregate db-refresh-views db-generate-insights ## Complete database update pipeline
+db-pipeline: db-aggregate fix-encoding-mapping db-refresh-views db-generate-insights ## Complete database update pipeline
 	@echo "$(GREEN)✓ Database pipeline complete (with insights)$(NC)"
 
 db-refresh-all: db-refresh-views db-generate-insights ## Refresh views and regenerate insights

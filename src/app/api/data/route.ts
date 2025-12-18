@@ -438,10 +438,32 @@ export async function GET(request: NextRequest) {
           console.warn(`[API] Slow query detected: ${queryTime}ms - consider optimizing or adding indexes`);
         }
         
+        // Convert BigInt fields to Numbers (Neon compatibility)
+        const processedData = result.rows.map((row: any) => {
+          const processed: any = {};
+          for (const [key, value] of Object.entries(row)) {
+            if (typeof value === 'bigint') {
+              processed[key] = Number(value);
+            } else {
+              processed[key] = value;
+            }
+          }
+          return processed;
+        });
+        
+        // Log sample for debugging
+        if (processedData.length > 0 && processedData.length > 0) {
+          console.log('[Data API] Sample data types:', {
+            city: processedData[0].city,
+            total_videos_type: typeof processedData[0].total_videos,
+            total_pedestrians_type: typeof processedData[0].total_pedestrians
+          });
+        }
+        
         return NextResponse.json({
           success: true,
-          data: result.rows,
-          count: result.rows.length
+          data: processedData,
+          count: processedData.length
         });
       } finally {
         client.release();

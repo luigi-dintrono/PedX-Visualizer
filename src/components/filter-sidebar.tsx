@@ -144,13 +144,41 @@ export function FilterSidebar() {
     new Set(
       cityData
         .filter(city => {
-          const videos = typeof city.total_videos === 'number' ? city.total_videos : (parseInt(String(city.total_videos)) || 0);
-          const pedestrians = typeof city.total_pedestrians === 'number' ? city.total_pedestrians : (parseInt(String(city.total_pedestrians)) || 0);
-          return videos > 0 && pedestrians > 0;
+          // Handle both string and number types from database (Neon returns strings, local PG returns numbers)
+          const videos = typeof city.total_videos === 'string' 
+            ? parseInt(city.total_videos) 
+            : (typeof city.total_videos === 'number' ? city.total_videos : 0);
+          const pedestrians = typeof city.total_pedestrians === 'string' 
+            ? parseInt(city.total_pedestrians) 
+            : (typeof city.total_pedestrians === 'number' ? city.total_pedestrians : 0);
+          
+          const hasData = !isNaN(videos) && videos > 0 && !isNaN(pedestrians) && pedestrians > 0;
+          
+          // Debug log for first few cities
+          if (cityData.indexOf(city) < 3) {
+            console.log('[FilterSidebar] City filter check:', {
+              city: city.city,
+              total_videos: city.total_videos,
+              total_videos_type: typeof city.total_videos,
+              parsed_videos: videos,
+              total_pedestrians: city.total_pedestrians,
+              total_pedestrians_type: typeof city.total_pedestrians,
+              parsed_pedestrians: pedestrians,
+              hasData
+            });
+          }
+          
+          return hasData;
         })
         .map(city => city.city)
     )
   ).sort()
+  
+  // Log total cities for debugging
+  if (cityData.length > 0) {
+    console.log('[FilterSidebar] Total cities in cityData:', cityData.length);
+    console.log('[FilterSidebar] Cities after filtering:', uniqueCities.length);
+  }
 
   const handleCitySelect = (cityName: string) => {
     const newSelectedCity = cityName === "all" ? null : cityName

@@ -8,10 +8,11 @@
  */
 
 const { Pool } = require('pg');
-require('dotenv').config();
+require('dotenv').config({ path: ['.env.local', '.env'] });
 
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
+    ssl: process.env.DATABASE_URL?.includes('neon.tech') ? { rejectUnauthorized: false } : false,
     client_encoding: 'UTF8',
 });
 

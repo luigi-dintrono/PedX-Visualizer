@@ -7,7 +7,7 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const city = searchParams.get('city');
     const country = searchParams.get('country');
-    const limit = parseInt(searchParams.get('limit') || '50');
+    const limit = parseInt(searchParams.get('limit') || '1000'); // Increased default from 50 to 1000
     
     // NEW: Optional date parameter for temporal queries
     // Format: YYYY-MM-DD (e.g., '2024-01-01')
@@ -59,19 +59,33 @@ export async function GET(request: NextRequest) {
     
     const result = await pool.query(query, params);
     
-    // Ensure all string fields are properly encoded
+    // Ensure all string fields are properly encoded and numeric fields are numbers
     const encodedData = result.rows.map((row: any) => {
       const encodedRow: any = {};
       for (const [key, value] of Object.entries(row)) {
         if (typeof value === 'string') {
           // Normalize the string to ensure proper UTF-8 encoding
           encodedRow[key] = value.normalize('NFC');
+        } else if (typeof value === 'bigint') {
+          // Convert BigInt to Number (Neon might return BIGINT as BigInt)
+          encodedRow[key] = Number(value);
         } else {
           encodedRow[key] = value;
         }
       }
       return encodedRow;
     });
+    
+    // Log sample for debugging (only first row)
+    if (encodedData.length > 0) {
+      console.log('[Cities API] Sample city data types:', {
+        city: encodedData[0].city,
+        total_videos: encodedData[0].total_videos,
+        total_videos_type: typeof encodedData[0].total_videos,
+        total_pedestrians: encodedData[0].total_pedestrians,
+        total_pedestrians_type: typeof encodedData[0].total_pedestrians
+      });
+    }
     
     return NextResponse.json({
       success: true,

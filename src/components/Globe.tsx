@@ -409,6 +409,12 @@ export default function Globe() {
       
       const response = await fetch(url);
       const result = await response.json();
+      console.log('[Globe] fetchGlobalData response:', {
+        url: url,
+        success: result.success,
+        count: result.count,
+        dataLength: result.data?.length
+      });
       return result.success ? result.data : [];
     } catch (error) {
       console.error('Error fetching global data:', error);

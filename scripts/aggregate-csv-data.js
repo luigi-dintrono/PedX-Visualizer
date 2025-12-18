@@ -15,7 +15,10 @@ const fs = require('fs');
 const path = require('path');
 const csv = require('csv-parser');
 const { Pool } = require('pg');
-require('dotenv').config();
+
+// Load environment variables from .env.local (for Next.js projects) or .env
+require('dotenv').config({ path: '.env.local' });
+require('dotenv').config(); // Fallback to .env if .env.local doesn't exist
 
 // Import GeoNames API integration
 const GeoNamesAPI = require('./geonames-api');
@@ -327,8 +330,12 @@ class DatabaseAggregator {
         }
 
         // Insert or update cities
+        console.log(`\n🏙️  Inserting ${cityMap.size} cities...`);
+        let cityCount = 0;
         for (const [cityKey, cityData] of cityMap) {
             try {
+                cityCount++;
+                console.log(`[${cityCount}/${cityMap.size}] Inserting ${cityData.city}, ${cityData.country}...`);
                 const result = await pool.query(`
                     INSERT INTO cities (
                         city, state, country, iso3, continent, latitude, longitude,
