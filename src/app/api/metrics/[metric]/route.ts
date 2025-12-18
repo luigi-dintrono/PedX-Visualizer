@@ -6,8 +6,8 @@ interface MetricConfig {
   unit: string;
   description: string;
   column_name: string;
-  rank_column: string;
-  higher_is_better: boolean;
+  rank_column: string | null;
+  higher_is_better: boolean | null;
 }
 
 const METRIC_CONFIGS: Record<string, MetricConfig> = {
@@ -123,7 +123,7 @@ export async function GET(
     const globalBaseline = globalResult.rows[0];
 
     // Map metric to global baseline column
-    const globalColumnMap: Record<string, string> = {
+    const globalColumnMap: Record<string, string | null> = {
       risky_crossing: 'global_risky_crossing_rate',
       run_red_light: 'global_run_red_light_rate',
       crosswalk_usage: 'global_crosswalk_usage_rate',
@@ -185,7 +185,7 @@ export async function GET(
         videoCount: parseInt(row.video_count) || 0,
         pedestrianCount: parseInt(row.pedestrian_count) || 0,
         deltaVsGlobal: deltaPercent ? parseFloat(deltaPercent.toFixed(1)) : null,
-        rankValue: row[config.rank_column] || null,
+        rankValue: config.rank_column ? (row[config.rank_column] || null) : null,
       };
     });
 
