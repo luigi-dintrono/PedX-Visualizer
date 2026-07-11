@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "pedx-prod",
+      "runtimeExecutable": "C:\\Users\\markc\\AppData\\Local\\nodejs\\node.exe",
+      "runtimeArgs": ["node_modules/next/dist/bin/next", "start", "-p", "3013"],
+      "port": 3013
+    }
+  ]
+}
