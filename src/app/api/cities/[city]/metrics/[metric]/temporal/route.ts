@@ -15,7 +15,8 @@ export async function GET(
     const { city: cityParam, metric } = await params;
     const city = decodeURIComponent(cityParam);
     const { searchParams } = new URL(request.url);
-    const months = parseInt(searchParams.get('months') || '6'); // Default to 6 months
+    const monthsRaw = parseInt(searchParams.get('months') || '6', 10); // Default to 6 months
+    const months = Number.isFinite(monthsRaw) ? Math.min(Math.max(monthsRaw, 1), 60) : 6;
 
     // Map metric names to database columns
     const metricMap: { [key: string]: { column: string; unit: string; name: string } } = {

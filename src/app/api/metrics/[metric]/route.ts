@@ -182,9 +182,10 @@ export async function GET(
         country: row.country,
         continent: row.continent,
         value: cityValue,
-        videoCount: parseInt(row.video_count) || 0,
-        pedestrianCount: parseInt(row.pedestrian_count) || 0,
-        deltaVsGlobal: deltaPercent ? parseFloat(deltaPercent.toFixed(1)) : null,
+        videoCount: parseInt(row.video_count, 10) || 0,
+        pedestrianCount: parseInt(row.pedestrian_count, 10) || 0,
+        // Explicit null check so a delta of exactly 0 (city == global) is kept as 0, not "N/A".
+        deltaVsGlobal: deltaPercent === null ? null : parseFloat(deltaPercent.toFixed(1)),
         rankValue: config.rank_column ? (row[config.rank_column] || null) : null,
       };
     });

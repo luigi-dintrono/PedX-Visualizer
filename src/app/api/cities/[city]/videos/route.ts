@@ -7,7 +7,8 @@ export async function GET(
 ) {
   try {
     const { city } = await params;
-    const limit = parseInt(request.nextUrl.searchParams.get('limit') || '5');
+    const limitRaw = parseInt(request.nextUrl.searchParams.get('limit') || '5', 10);
+    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 500) : 5;
 
     const query = `
       SELECT 
@@ -32,12 +33,14 @@ export async function GET(
     const result = await pool.query(query, [city, limit]);
     
     // Convert decimal/numeric types to numbers for JSON response
+    // Use explicit null checks so a valid 0 coordinate (equator / prime meridian)
+    // is not dropped to null by a truthiness test.
     const videos = result.rows.map(row => ({
       ...row,
-      latitude: row.latitude ? parseFloat(row.latitude) : null,
-      longitude: row.longitude ? parseFloat(row.longitude) : null,
-      city_latitude: row.city_latitude ? parseFloat(row.city_latitude) : null,
-      city_longitude: row.city_longitude ? parseFloat(row.city_longitude) : null,
+      latitude: row.latitude != null ? parseFloat(row.latitude) : null,
+      longitude: row.longitude != null ? parseFloat(row.longitude) : null,
+      city_latitude: row.city_latitude != null ? parseFloat(row.city_latitude) : null,
+      city_longitude: row.city_longitude != null ? parseFloat(row.city_longitude) : null,
     }));
     
     return NextResponse.json({

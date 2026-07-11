@@ -13,7 +13,6 @@ import {
   Car,
   ChevronRight,
   ExternalLink,
-  Calendar,
   Eye,
   AlertTriangle,
   Zap,
@@ -330,13 +329,11 @@ export function InfoSidebar() {
     globalValue: number | null | undefined,
     metricType: 'rate' | 'speed' | 'time' = 'rate'
   ): { delta: number | null; formatted: string; color: string } => {
-    if (!cityValue || cityValue === null || cityValue === undefined || 
-        !globalValue || globalValue === null || globalValue === 0) {
-      return { delta: null, formatted: 'N/A', color: 'text-muted-foreground' }
-    }
-
+    // Only bail when values are genuinely missing/non-numeric, or when the global
+    // baseline is 0 (division undefined). A valid city value of 0 must NOT be dropped
+    // by a truthiness check.
     const cityNum = typeof cityValue === 'string' ? parseFloat(cityValue) : cityValue
-    if (isNaN(cityNum) || cityNum === null) {
+    if (cityNum == null || isNaN(cityNum) || globalValue == null || globalValue === 0) {
       return { delta: null, formatted: 'N/A', color: 'text-muted-foreground' }
     }
 
@@ -1030,10 +1027,6 @@ export function InfoSidebar() {
                 <Users className="w-4 h-4" />
                 {filteredCityData.total_pedestrians || 0} pedestrians
               </div>
-              <div className="flex items-center gap-1">
-                <Calendar className="w-4 h-4" />
-                Last updated: {new Date().toLocaleDateString()}
-              </div>
             </div>
           </div>
 
@@ -1333,9 +1326,6 @@ export function InfoSidebar() {
                         ))}
                       </div>
                     )}
-                    <div className="text-sm">
-                      <span className="font-medium">Infrastructure:</span> Crosswalks present, traffic lights available
-                    </div>
                   </>
                 ) : (
                   <div className="text-sm text-muted-foreground">Environment data not available</div>
@@ -1423,9 +1413,6 @@ export function InfoSidebar() {
                     ) : (
                       <div className="text-sm text-muted-foreground">No vehicle data available</div>
                     )}
-                    <div className="text-sm">
-                      <span className="font-medium">Density impact:</span> High density increases risk by 22%
-                    </div>
                   </>
                 ) : (
                   <div className="text-sm text-muted-foreground">Vehicle data not available</div>

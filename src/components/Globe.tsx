@@ -212,6 +212,22 @@ export default function Globe() {
   const viewerRef = useRef<Cesium.Viewer | null>(null);
   const dataSourceRef = useRef<Cesium.DataSource | null>(null);
   const videoDataSourceRef = useRef<Cesium.DataSource | null>(null);
+  // Holds the hover/click handler registered by createHeatmap so it can be
+  // destroyed before a new one is created (otherwise handlers leak and stack).
+  const heatmapHandlerRef = useRef<Cesium.ScreenSpaceEventHandler | null>(null);
+  // Refs mirroring the latest values used by the one-time init effect's
+  // morphComplete listener, so it rebuilds with current (not stale) state.
+  const selectedMetricsRef = useRef<string[]>([]);
+  const fetchGlobalDataRef = useRef<(() => Promise<CityGlobeData[]>) | null>(null);
+  const createHeatmapRef = useRef<
+    | ((
+        data: CityGlobeData[],
+        metricType: string,
+        Cesium: typeof import('cesium'),
+        onCityClick?: (cityName: string) => void
+      ) => Promise<void>)
+    | null
+  >(null);
   
   const {
     selectedCity,
@@ -627,9 +643,18 @@ export default function Globe() {
     // Add data source to viewer
     viewer.dataSources.add(dataSource);
 
+    // Remove any previously-registered hover/click handler before creating a new
+    // one. createHeatmap runs on every metric/filter change, so without this the
+    // ScreenSpaceEventHandlers leak and multiple duplicate listeners stack up.
+    if (heatmapHandlerRef.current) {
+      heatmapHandlerRef.current.destroy();
+      heatmapHandlerRef.current = null;
+    }
+
     // Add hover effects
     const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
-    
+    heatmapHandlerRef.current = handler;
+
     handler.setInputAction((event: any) => {
       const pickedObject = viewer.scene.pick(event.endPosition);
       
@@ -813,8 +838,10 @@ export default function Globe() {
     // Extract coordinates - use the EXACT same logic as the heatmap
     const lat = typeof cityInfo.latitude === 'string' ? parseFloat(cityInfo.latitude) : cityInfo.latitude;
     const lng = typeof cityInfo.longitude === 'string' ? parseFloat(cityInfo.longitude) : cityInfo.longitude;
-    
-    if (!lat || !lng || isNaN(lat) || isNaN(lng)) {
+
+    // Use explicit null/NaN checks: `!lat`/`!lng` would wrongly reject valid
+    // coordinates on the equator (lat 0) or prime meridian (lng 0).
+    if (lat == null || lng == null || isNaN(lat) || isNaN(lng)) {
       console.warn(`Invalid coordinates for ${cityName}: lat=${lat}, lng=${lng}`);
       return;
     }
@@ -867,6 +894,14 @@ export default function Globe() {
     });
   }, [cityData]);
 
+  // Keep refs in sync with the latest values so the one-time init effect's
+  // morphComplete listener can read current state without re-running.
+  useEffect(() => {
+    selectedMetricsRef.current = selectedMetrics;
+    fetchGlobalDataRef.current = fetchGlobalData;
+    createHeatmapRef.current = createHeatmap;
+  });
+
   // Initialize Cesium
   useEffect(() => {
     const initCesium = async () => {
@@ -876,11 +911,16 @@ export default function Globe() {
         return;
       }
 
-      window.CESIUM_BASE_URL = '/cesium/';
+      // Configurable via env (documented in env.example); falls back to defaults.
+      window.CESIUM_BASE_URL = process.env.NEXT_PUBLIC_CESIUM_BASE_URL || '/cesium/';
 
       const Cesium = await import('cesium');
 
-      Cesium.Ion.defaultAccessToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJiY2FhOThlNi1iNDMwLTQyYTQtYmNjNy0zNGMyYzIwNTg1YTUiLCJpZCI6MzQxNDgwLCJpYXQiOjE3NTc5MzY2Mzh9.ATR_-WPV_pD-R9uod-sFaDzlzDYM0f-MlmGRFg393d4';
+      // Prefer the env-provided Ion token. The committed literal is a fallback so
+      // the app keeps working, but it should be rotated and moved to env only.
+      Cesium.Ion.defaultAccessToken =
+        process.env.NEXT_PUBLIC_CESIUM_ION_TOKEN ||
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJiY2FhOThlNi1iNDMwLTQyYTQtYmNjNy0zNGMyYzIwNTg1YTUiLCJpZCI6MzQxNDgwLCJpYXQiOjE3NTc5MzY2Mzh9.ATR_-WPV_pD-R9uod-sFaDzlzDYM0f-MlmGRFg393d4';
 
       // Use Cesium's default sets, which include all Ion imagery/terrain options available with the token
       const imageryProviderViewModels = (Cesium as any).createDefaultImageryProviderViewModels
@@ -1081,11 +1121,14 @@ export default function Globe() {
             });
           }
 
-          // If a metric is active, rebuild the heatmap to ensure perfect alignment in new mode
+          // If a metric is active, rebuild the heatmap to ensure perfect alignment in new mode.
+          // Read through refs so we use the CURRENT metric/filters rather than the values
+          // captured when this one-time init effect first ran.
           try {
-            if (selectedMetrics.length > 0) {
-              const data = await fetchGlobalData();
-              await createHeatmap(data, selectedMetrics[0], Cesium, setSelectedCity);
+            const activeMetrics = selectedMetricsRef.current;
+            if (activeMetrics.length > 0 && fetchGlobalDataRef.current && createHeatmapRef.current) {
+              const data = await fetchGlobalDataRef.current();
+              await createHeatmapRef.current(data, activeMetrics[0], Cesium, setSelectedCity);
             }
           } catch (e) {
             // eslint-disable-next-line no-console
@@ -1110,10 +1153,15 @@ export default function Globe() {
     return () => {
       clearTimeout(timeoutId);
       window.removeEventListener('resize', handleResize);
+      if (heatmapHandlerRef.current) {
+        heatmapHandlerRef.current.destroy();
+        heatmapHandlerRef.current = null;
+      }
       if (viewerRef.current) {
         viewerRef.current.destroy();
         viewerRef.current = null;
       }
+      dataSourceRef.current = null;
       videoDataSourceRef.current = null;
     };
   }, []);

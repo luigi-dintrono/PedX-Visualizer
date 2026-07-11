@@ -2,10 +2,8 @@ import CopyPlugin from 'copy-webpack-plugin';
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  eslint: {
-    // Ignore ESLint errors during production builds
-    ignoreDuringBuilds: true,
-  },
+  // Note: Next 16 no longer runs ESLint during `next build` and rejects an
+  // `eslint` key here, so lint must be run separately (e.g. `npx eslint .`).
   typescript: {
     // ⚠️ Bypass TypeScript errors during production builds
     ignoreBuildErrors: true,

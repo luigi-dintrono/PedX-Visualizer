@@ -37,18 +37,36 @@ export async function GET(request: NextRequest) {
 
     const global = globalResult.rows[0];
 
-    // Convert to numbers and structure the response
+    // mv_global_insights has no crossing_time column. Fetch the real global average
+    // crossing time directly instead of proxying crossing_speed (a different,
+    // inversely-related quantity) as the previous code did.
+    let globalAvgCrossingTime: number | null = null;
+    try {
+      const ctResult = await pool.query(
+        `SELECT AVG(crossing_time) AS value FROM videos WHERE crossing_time IS NOT NULL`
+      );
+      const raw = ctResult.rows[0]?.value;
+      globalAvgCrossingTime = raw == null ? null : Number(raw);
+    } catch (ctErr) {
+      console.error('Error fetching global crossing time:', ctErr);
+    }
+
+    // Use explicit null checks (not truthiness) so a legitimate 0 is preserved
+    // rather than being reported as "no data".
+    const num = (v: any): number | null => (v == null ? null : Number(v));
+    const rate = (v: any): number | null => (v == null ? null : Number(v) * 100); // ratio -> %
+
     const globalInsights = {
-      crossing_speed: global.global_avg_crossing_speed ? parseFloat(global.global_avg_crossing_speed) : null,
-      crossing_time: global.global_avg_crossing_speed ? parseFloat(global.global_avg_crossing_speed) : null, // Using crossing_speed as proxy
-      risky_crossing_rate: global.global_risky_crossing_rate ? parseFloat(global.global_risky_crossing_rate) * 100 : null, // Convert to percentage
-      run_red_light_rate: global.global_run_red_light_rate ? parseFloat(global.global_run_red_light_rate) * 100 : null, // Convert to percentage
-      crosswalk_usage_rate: global.global_crosswalk_usage_rate ? parseFloat(global.global_crosswalk_usage_rate) * 100 : null, // Convert to percentage
-      phone_usage_rate: global.global_phone_usage_rate ? parseFloat(global.global_phone_usage_rate) * 100 : null, // Convert to percentage
-      avg_pedestrian_age: global.global_avg_pedestrian_age ? parseFloat(global.global_avg_pedestrian_age) : null,
-      total_cities: parseInt(global.total_cities) || 0,
-      total_videos: parseInt(global.total_videos) || 0,
-      total_pedestrians: parseInt(global.total_pedestrians) || 0,
+      crossing_speed: num(global.global_avg_crossing_speed),
+      crossing_time: globalAvgCrossingTime,
+      risky_crossing_rate: rate(global.global_risky_crossing_rate),
+      run_red_light_rate: rate(global.global_run_red_light_rate),
+      crosswalk_usage_rate: rate(global.global_crosswalk_usage_rate),
+      phone_usage_rate: rate(global.global_phone_usage_rate),
+      avg_pedestrian_age: num(global.global_avg_pedestrian_age),
+      total_cities: parseInt(global.total_cities, 10) || 0,
+      total_videos: parseInt(global.total_videos, 10) || 0,
+      total_pedestrians: parseInt(global.total_pedestrians, 10) || 0,
     };
 
     return NextResponse.json({

@@ -420,7 +420,7 @@ export function FilterSidebar() {
                         <div className="px-2">
                           <Slider
                             value={filters.population}
-                            onValueChange={(value) => updateFilter('population', value)}
+                            onValueChange={(value) => updateFilter('population', value as [number, number])}
                             min={0}
                             max={50000000}
                             step={100000}
@@ -573,7 +573,7 @@ export function FilterSidebar() {
                         <div className="px-2">
                           <Slider
                             value={filters.avgRoadWidth}
-                            onValueChange={(value) => updateFilter('avgRoadWidth', value)}
+                            onValueChange={(value) => updateFilter('avgRoadWidth', value as [number, number])}
                             min={0}
                             max={50}
                             step={0.5}
@@ -680,7 +680,7 @@ export function FilterSidebar() {
                         <div className="px-2">
                           <Slider
                             value={filters.crossingSpeed}
-                            onValueChange={(value) => updateFilter('crossingSpeed', value)}
+                            onValueChange={(value) => updateFilter('crossingSpeed', value as [number, number])}
                             min={0}
                             max={5}
                             step={0.1}
@@ -698,7 +698,7 @@ export function FilterSidebar() {
                         <div className="px-2">
                           <Slider
                             value={filters.timeToStart}
-                            onValueChange={(value) => updateFilter('timeToStart', value)}
+                            onValueChange={(value) => updateFilter('timeToStart', value as [number, number])}
                             min={0}
                             max={30}
                             step={0.5}
@@ -744,7 +744,7 @@ export function FilterSidebar() {
                         <div className="px-2">
                           <Slider
                             value={filters.ageRange}
-                            onValueChange={(value) => updateFilter('ageRange', value)}
+                            onValueChange={(value) => updateFilter('ageRange', value as [number, number])}
                             min={0}
                             max={100}
                             step={1}

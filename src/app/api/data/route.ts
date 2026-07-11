@@ -7,7 +7,8 @@ export async function GET(request: NextRequest) {
     const city = searchParams.get('city');
     const country = searchParams.get('country');
     const continent = searchParams.get('continent');
-    const limit = parseInt(searchParams.get('limit') || '1000');
+    const limitRaw = parseInt(searchParams.get('limit') || '1000', 10);
+    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 10000) : 1000;
     
     // Granular filter parameters
     const continents = searchParams.get('continents')?.split(',').filter(Boolean) || [];
@@ -88,8 +89,17 @@ export async function GET(request: NextRequest) {
                               (minBicycle !== null && minBicycle !== undefined) || 
                               (maxBicycle !== null && maxBicycle !== undefined);
     
-    // Use CTE if we have vehicle filters OR clothing filters
-    const useCTE = hasVehicleFilters || hasClothingFilters;
+    // Demographic / environmental pedestrian-level filters (gender, weather).
+    // These were previously parsed but never applied to the query. Values come
+    // from a fixed UI whitelist, so they can be inlined as SQL literals safely
+    // (no user-controlled SQL) without disturbing the $-parameter ordering below.
+    const allowedGenders = gender.filter((g) => ['male', 'female', 'unknown'].includes(g));
+    const allowedWeather = weather.filter((w) => ['shine', 'rain', 'cloudy'].includes(w));
+    const hasGenderFilter = allowedGenders.length > 0;
+    const hasWeatherFilter = allowedWeather.length > 0;
+
+    // Use CTE if we have vehicle, clothing, gender, or weather filters
+    const useCTE = hasVehicleFilters || hasClothingFilters || hasGenderFilter || hasWeatherFilter;
     
     console.log('[API] Filter check:', {
       hasVehicleFilters,
@@ -141,7 +151,21 @@ export async function GET(request: NextRequest) {
           pedestrianFilters.push('p.suitcase IS TRUE');
         }
       }
-      
+
+      // Gender filter (pedestrian-level). Whitelisted literals => injection-safe.
+      if (hasGenderFilter) {
+        const genderConds = allowedGenders.map((g) =>
+          g === 'unknown' ? "(p.gender IS NULL OR p.gender = '')" : `p.gender = '${g}'`
+        );
+        pedestrianFilters.push(`(${genderConds.join(' OR ')})`);
+      }
+
+      // Weather filter (video-level main_weather, case-insensitive match).
+      if (hasWeatherFilter) {
+        const weatherConds = allowedWeather.map((w) => `v.main_weather ILIKE '${w}'`);
+        pedestrianFilters.push(`(${weatherConds.join(' OR ')})`);
+      }
+
       // Combine all pedestrian filters with AND
       const pedestrianWhereClause = pedestrianFilters.length > 0 
         ? `AND ${pedestrianFilters.join(' AND ')}`
@@ -452,7 +476,7 @@ export async function GET(request: NextRequest) {
         });
         
         // Log sample for debugging
-        if (processedData.length > 0 && processedData.length > 0) {
+        if (processedData.length > 0) {
           console.log('[Data API] Sample data types:', {
             city: processedData[0].city,
             total_videos_type: typeof processedData[0].total_videos,

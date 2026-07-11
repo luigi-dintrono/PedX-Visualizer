@@ -53,8 +53,10 @@ export async function GET(
   try {
     const { city: cityParam } = await params;
     const city = decodeURIComponent(cityParam);
-    
-    await pool.query("SET client_encoding TO 'UTF8'");
+
+    // UTF-8 is enforced via the Pool's client_encoding option (src/lib/database.ts).
+    // A per-request `SET client_encoding` on the pool is unreliable (it lands on an
+    // arbitrary pooled connection, not necessarily the ones used below) and was removed.
 
     // Get city ID first
     const cityResult = await pool.query(

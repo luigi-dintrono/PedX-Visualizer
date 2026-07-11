@@ -7,7 +7,8 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const city = searchParams.get('city');
     const country = searchParams.get('country');
-    const limit = parseInt(searchParams.get('limit') || '1000'); // Increased default from 50 to 1000
+    const limitRaw = parseInt(searchParams.get('limit') || '1000', 10);
+    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 10000) : 1000;
     
     // NEW: Optional date parameter for temporal queries
     // Format: YYYY-MM-DD (e.g., '2024-01-01')
@@ -54,9 +55,9 @@ export async function GET(request: NextRequest) {
     query += ` ORDER BY city LIMIT $${++paramCount}`;
     params.push(limit);
 
-    // Ensure UTF-8 encoding for the query
-    await pool.query("SET client_encoding TO 'UTF8'");
-    
+    // Note: UTF-8 is already enforced via the Pool's client_encoding option in
+    // src/lib/database.ts. A per-request `SET client_encoding` on the pool is
+    // unreliable (it runs on an arbitrary pooled connection) and was removed.
     const result = await pool.query(query, params);
     
     // Ensure all string fields are properly encoded and numeric fields are numbers
