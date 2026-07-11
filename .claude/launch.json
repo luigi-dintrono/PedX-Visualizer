@@ -3,9 +3,15 @@
   "configurations": [
     {
       "name": "pedx-prod",
-      "runtimeExecutable": "C:\\Users\\markc\\AppData\\Local\\nodejs\\node.exe",
-      "runtimeArgs": ["node_modules/next/dist/bin/next", "start", "-p", "3013"],
-      "port": 3013
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "start"],
+      "port": 3000
+    },
+    {
+      "name": "pedx-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 3000
     }
   ]
 }

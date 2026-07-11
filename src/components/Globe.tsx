@@ -4,12 +4,63 @@ import { useEffect, useRef, useCallback, useMemo } from 'react';
 import { useFilter } from '@/contexts/FilterContext';
 import { CityGlobeData } from '@/types/database';
 import type * as Cesium from 'cesium';
-import 'cesium/Build/Cesium/Widgets/widgets.css';
 
 declare global {
   interface Window {
     CESIUM_BASE_URL: string;
+    Cesium?: typeof import('cesium');
   }
+}
+
+// Load the prebuilt Cesium bundle (public/cesium/Cesium.js, copied from
+// node_modules by scripts/copy-cesium-assets.js) via a <script> tag instead of
+// `import('cesium')`. Bundlers repeatedly break on Cesium's module graph — the
+// 1.143 dynamic import hangs forever under Turbopack and chunk-errors under
+// webpack — so we bypass bundling entirely: the npm package supplies only the
+// TypeScript types and the copied static assets. widgets.css is injected as a
+// <link> for the same reason.
+let cesiumLoadPromise: Promise<typeof import('cesium')> | null = null;
+
+function loadCesium(): Promise<typeof import('cesium')> {
+  if (cesiumLoadPromise) return cesiumLoadPromise;
+  cesiumLoadPromise = new Promise((resolve, reject) => {
+    if (window.Cesium) {
+      resolve(window.Cesium);
+      return;
+    }
+
+    const base = process.env.NEXT_PUBLIC_CESIUM_BASE_URL || '/cesium/';
+    const baseWithSlash = base.endsWith('/') ? base : `${base}/`;
+    // Must be set before Cesium.js executes so it can locate Workers/Assets.
+    window.CESIUM_BASE_URL = baseWithSlash;
+
+    if (!document.querySelector('link[data-cesium-widgets-css]')) {
+      const link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = `${baseWithSlash}Widgets/widgets.css`;
+      link.setAttribute('data-cesium-widgets-css', 'true');
+      document.head.appendChild(link);
+    }
+
+    const script = document.createElement('script');
+    script.src = `${baseWithSlash}Cesium.js`;
+    script.async = true;
+    script.onload = () => {
+      if (window.Cesium) {
+        resolve(window.Cesium);
+      } else {
+        cesiumLoadPromise = null;
+        reject(new Error('Cesium.js loaded but window.Cesium is undefined'));
+      }
+    };
+    script.onerror = () => {
+      cesiumLoadPromise = null;
+      script.remove();
+      reject(new Error(`Failed to load ${baseWithSlash}Cesium.js`));
+    };
+    document.head.appendChild(script);
+  });
+  return cesiumLoadPromise;
 }
 
 // Metric configuration for easy extensibility
@@ -461,13 +512,13 @@ export default function Globe() {
   // Scene mode controls
   const morphTo2D = useCallback(async () => {
     if (!viewerRef.current) return;
-    const Cesium = await import('cesium');
+    await loadCesium();
     viewerRef.current.scene.morphTo2D(0.8);
   }, []);
 
   const morphTo3D = useCallback(async () => {
     if (!viewerRef.current) return;
-    const Cesium = await import('cesium');
+    await loadCesium();
     viewerRef.current.scene.morphTo3D(0.8);
   }, []);
 
@@ -911,10 +962,9 @@ export default function Globe() {
         return;
       }
 
-      // Configurable via env (documented in env.example); falls back to defaults.
-      window.CESIUM_BASE_URL = process.env.NEXT_PUBLIC_CESIUM_BASE_URL || '/cesium/';
-
-      const Cesium = await import('cesium');
+      // loadCesium sets window.CESIUM_BASE_URL (env-configurable, documented in
+      // env.example) before the bundle script executes.
+      const Cesium = await loadCesium();
 
       // Prefer the env-provided Ion token. The committed literal is a fallback so
       // the app keeps working, but it should be rotated and moved to env only.
@@ -1197,7 +1247,7 @@ export default function Globe() {
         if (data.length === 0) {
           console.warn('[Globe] No data returned from API - check filters');
         }
-        const Cesium = await import('cesium');
+        const Cesium = await loadCesium();
         
         // Use the first selected metric for heatmap
         const metricType = selectedMetrics[0];
@@ -1231,7 +1281,7 @@ export default function Globe() {
     }
 
     const handleCityZoomAndVideos = async () => {
-      const Cesium = await import('cesium');
+      const Cesium = await loadCesium();
       
       // Zoom to city
       await zoomToCity(selectedCity, Cesium);
@@ -1248,8 +1298,8 @@ export default function Globe() {
   useEffect(() => {
     const resetGlobe = async () => {
       if (!viewerRef.current) return;
-      
-      const Cesium = await import('cesium');
+
+      const Cesium = await loadCesium();
       const viewer = viewerRef.current;
       
       // Reset camera to original global view

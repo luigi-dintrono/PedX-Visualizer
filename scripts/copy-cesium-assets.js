@@ -81,4 +81,19 @@ if (fs.existsSync(cesiumWorkersPath)) {
   console.warn('⚠ Cesium Workers directory not found');
 }
 
+// Copy the prebuilt Cesium.js bundle. The app loads it via a <script> tag at
+// runtime (see src/components/Globe.tsx) instead of bundling `import('cesium')`,
+// because bundlers break on Cesium's module graph (1.143 hangs under Turbopack
+// and chunk-errors under webpack). Keeping bundle + Workers/Assets from the same
+// node_modules copy guarantees their versions match.
+const cesiumBundlePath = path.join(cesiumPath, 'Build/Cesium/Cesium.js');
+const publicBundlePath = path.join(publicCesiumPath, 'Cesium.js');
+
+if (fs.existsSync(cesiumBundlePath)) {
+  fs.copyFileSync(cesiumBundlePath, publicBundlePath);
+  console.log('✓ Copied Cesium.js bundle');
+} else {
+  console.warn('⚠ Cesium.js bundle not found');
+}
+
 console.log('✓ Cesium assets copied to /public/cesium');
