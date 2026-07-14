@@ -11,7 +11,14 @@ function intFromEnv(name: string, fallback: number): number {
 // Database configuration
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+  // Verify the server's TLS certificate in production. Managed hosts (Neon, Supabase, Vercel
+  // Postgres) present publicly-trusted certificates, so default verification succeeds and this
+  // protects the DB credentials + traffic from MITM. Only set DB_SSL_INSECURE=1 for a host with
+  // a self-signed cert (not recommended); it must never be the default.
+  ssl:
+    process.env.NODE_ENV === 'production'
+      ? { rejectUnauthorized: process.env.DB_SSL_INSECURE !== '1' }
+      : false,
   // Ensure UTF-8 encoding for proper character handling
   client_encoding: 'UTF8',
   // Pool sizing (documented in env.example) with sensible serverless defaults.

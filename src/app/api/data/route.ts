@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { pool } from '@/lib/database';
+import { READ_CACHE_HEADERS } from '@/lib/http';
 
 export async function GET(request: NextRequest) {
   try {
@@ -100,16 +101,7 @@ export async function GET(request: NextRequest) {
 
     // Use CTE if we have vehicle, clothing, gender, or weather filters
     const useCTE = hasVehicleFilters || hasClothingFilters || hasGenderFilter || hasWeatherFilter;
-    
-    console.log('[API] Filter check:', {
-      hasVehicleFilters,
-      hasClothingFilters,
-      useCTE,
-      shirtTypeColumns,
-      bottomWearColumns,
-      backpack, umbrella, handbag, suitcase
-    });
-    
+
     let query: string;
     const params: any[] = [];
     let paramCount = 0;
@@ -342,7 +334,6 @@ export async function GET(request: NextRequest) {
     // Vehicle count filters - always apply when parameters are provided
     // (parameters are always sent from the frontend, so we always use the CTE)
     if (useCTE && hasVehicleFilters) {
-      console.log('[API] Applying vehicle filters with CTE');
       // Apply car filter - apply range filters (min <= value <= max)
       // Always apply both min and max to ensure proper range filtering
       // Check for null/undefined, not falsy values (0 is a valid filter value)
@@ -351,16 +342,14 @@ export async function GET(request: NextRequest) {
         if (!isNaN(minCarValue)) {
           query += ` AND cfc.car_count >= $${++paramCount}`;
           params.push(minCarValue);
-          console.log('[API] Applied car min filter:', minCarValue);
         }
       }
-      
+
       if (maxCar !== null && maxCar !== undefined && maxCar !== '') {
         const maxCarValue = parseInt(maxCar);
         if (!isNaN(maxCarValue)) {
           query += ` AND cfc.car_count <= $${++paramCount}`;
           params.push(maxCarValue);
-          console.log('[API] Applied car max filter:', maxCarValue);
         }
       }
       
@@ -441,14 +430,7 @@ export async function GET(request: NextRequest) {
     params.push(limit);
 
     const startTime = Date.now();
-    console.log('[API] Executing query with', params.length, 'parameters');
-    if (useCTE) {
-      console.log('[API] Using optimized CTE for filters:', {
-        hasVehicleFilters,
-        hasClothingFilters
-      });
-    }
-    
+
     try {
       // Set a longer timeout for complex queries (30 seconds)
       const client = await pool.connect();
@@ -456,12 +438,11 @@ export async function GET(request: NextRequest) {
         await client.query('SET statement_timeout = 30000'); // 30 seconds
         const result = await client.query(query, params);
         const queryTime = Date.now() - startTime;
-        console.log(`[API] Query returned ${result.rows.length} cities in ${queryTime}ms`);
-        
+
         if (queryTime > 5000) {
           console.warn(`[API] Slow query detected: ${queryTime}ms - consider optimizing or adding indexes`);
         }
-        
+
         // Convert BigInt fields to Numbers (Neon compatibility)
         const processedData = result.rows.map((row: any) => {
           const processed: any = {};
@@ -475,28 +456,24 @@ export async function GET(request: NextRequest) {
           return processed;
         });
         
-        // Log sample for debugging
-        if (processedData.length > 0) {
-          console.log('[Data API] Sample data types:', {
-            city: processedData[0].city,
-            total_videos_type: typeof processedData[0].total_videos,
-            total_pedestrians_type: typeof processedData[0].total_pedestrians
-          });
-        }
-        
-        return NextResponse.json({
-          success: true,
-          data: processedData,
-          count: processedData.length
-        });
+        return NextResponse.json(
+          {
+            success: true,
+            data: processedData,
+            count: processedData.length
+          },
+          { headers: READ_CACHE_HEADERS }
+        );
       } finally {
         client.release();
       }
     } catch (error: any) {
       const queryTime = Date.now() - startTime;
       console.error(`[API] Query failed after ${queryTime}ms:`, error);
+      // Return a generic message only — do not leak raw Postgres/driver error text
+      // (schema/table/column names) to unauthenticated clients.
       return NextResponse.json(
-        { success: false, error: 'Query timeout or error', details: error.message },
+        { success: false, error: 'Query timeout or error' },
         { status: 500 }
       );
     }

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { pool } from '@/lib/database';
 import { CityInsight } from '@/types/database';
+import { READ_CACHE_HEADERS } from '@/lib/http';
 
 export async function GET(request: NextRequest) {
   try {
@@ -77,30 +78,22 @@ export async function GET(request: NextRequest) {
       return encodedRow;
     });
     
-    // Log sample for debugging (only first row)
-    if (encodedData.length > 0) {
-      console.log('[Cities API] Sample city data types:', {
-        city: encodedData[0].city,
-        total_videos: encodedData[0].total_videos,
-        total_videos_type: typeof encodedData[0].total_videos,
-        total_pedestrians: encodedData[0].total_pedestrians,
-        total_pedestrians_type: typeof encodedData[0].total_pedestrians
-      });
-    }
-    
-    return NextResponse.json({
-      success: true,
-      data: encodedData as CityInsight[],
-      count: encodedData.length,
-      // Include metadata about data range
-      metadata: {
-        date_filter: targetDate ? targetDate.toISOString().split('T')[0] : null,
-        is_temporal: !!targetDate,
-        data_range: targetDate 
-          ? `Data as of ${targetDate.toISOString().split('T')[0]}` 
-          : 'All available data (cumulative)'
-      }
-    });
+    return NextResponse.json(
+      {
+        success: true,
+        data: encodedData as CityInsight[],
+        count: encodedData.length,
+        // Include metadata about data range
+        metadata: {
+          date_filter: targetDate ? targetDate.toISOString().split('T')[0] : null,
+          is_temporal: !!targetDate,
+          data_range: targetDate
+            ? `Data as of ${targetDate.toISOString().split('T')[0]}`
+            : 'All available data (cumulative)'
+        }
+      },
+      { headers: READ_CACHE_HEADERS }
+    );
   } catch (error) {
     console.error('Error fetching cities:', error);
     return NextResponse.json(

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { pool } from '@/lib/database';
+import { READ_CACHE_HEADERS } from '@/lib/http';
 
 interface CityRankings {
   speed_rank?: number;
@@ -331,12 +332,6 @@ export async function GET(
         ORDER BY count DESC
         LIMIT 10
       `, [cityId]);
-      
-      console.log(`Vehicle query results for city ${cityId}:`, {
-        vehicleRows: vehiclesResult.rows.length,
-        vehicles: vehiclesResult.rows,
-        totalPercentage: vehiclesResult.rows.reduce((sum, row) => sum + (row.percentage || 0), 0)
-      });
     } catch (err) {
       console.error('Error fetching vehicle data:', err);
     }
@@ -403,11 +398,6 @@ export async function GET(
           }
         }
       }
-      
-      console.log(`Age query results for city ${cityId}:`, {
-        avgAge: avgAgeResult.rows[0]?.avg_age,
-        fromSummary: !!citySummaryResult.rows[0]?.avg_pedestrian_age
-      });
     } catch (err) {
       console.error('Error fetching average age:', err);
     }
@@ -461,26 +451,19 @@ export async function GET(
       avg_pedestrian_age: avgAgeResult.rows[0]?.avg_age ? parseFloat(Number(avgAgeResult.rows[0].avg_age).toFixed(1)) : null
     };
 
-    // Log response for debugging
-    console.log(`City details for ${city}:`, {
-      rankings: response.rankings,
-      environment_weather_count: response.environment.weather.length,
-      environment_daytime_count: response.environment.daytime.length,
-      demographics_gender_count: response.demographics.gender.length,
-      demographics_age_count: response.demographics.age.length,
-      vehicles_count: response.vehicles.length,
-      risk_factors_count: response.risk_factors.length
-    });
-
-    return NextResponse.json({
-      success: true,
-      data: response
-    });
+    return NextResponse.json(
+      {
+        success: true,
+        data: response
+      },
+      { headers: READ_CACHE_HEADERS }
+    );
   } catch (error) {
     console.error('Error fetching city details:', error);
     console.error('Error stack:', error instanceof Error ? error.stack : 'No stack trace');
+    // Generic client message only; the real error is logged server-side above.
     return NextResponse.json(
-      { success: false, error: 'Failed to fetch city details', details: error instanceof Error ? error.message : String(error) },
+      { success: false, error: 'Failed to fetch city details' },
       { status: 500 }
     );
   }

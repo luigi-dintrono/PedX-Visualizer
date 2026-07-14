@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { pool } from '@/lib/database';
+import { READ_CACHE_HEADERS } from '@/lib/http';
 
 interface MetricConfig {
   name: string;
@@ -190,24 +191,27 @@ export async function GET(
       };
     });
 
-    return NextResponse.json({
-      success: true,
-      data: {
-        metric: {
-          key: metric,
-          name: config.name,
-          unit: config.unit,
-          description: config.description,
+    return NextResponse.json(
+      {
+        success: true,
+        data: {
+          metric: {
+            key: metric,
+            name: config.name,
+            unit: config.unit,
+            description: config.description,
+          },
+          global: {
+            value: globalValue,
+            totalCities: parseInt(globalBaseline.total_cities),
+            totalVideos: parseInt(globalBaseline.total_videos),
+            totalPedestrians: parseInt(globalBaseline.total_pedestrians),
+          },
+          cities,
         },
-        global: {
-          value: globalValue,
-          totalCities: parseInt(globalBaseline.total_cities),
-          totalVideos: parseInt(globalBaseline.total_videos),
-          totalPedestrians: parseInt(globalBaseline.total_pedestrians),
-        },
-        cities,
       },
-    });
+      { headers: READ_CACHE_HEADERS }
+    );
   } catch (error) {
     console.error('Error fetching metric data:', error);
     return NextResponse.json(

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { pool } from '@/lib/database';
+import { READ_CACHE_HEADERS } from '@/lib/http';
 
 /**
  * GET /api/insights/global
@@ -69,10 +70,13 @@ export async function GET(request: NextRequest) {
       total_pedestrians: parseInt(global.total_pedestrians, 10) || 0,
     };
 
-    return NextResponse.json({
-      success: true,
-      data: globalInsights,
-    });
+    return NextResponse.json(
+      {
+        success: true,
+        data: globalInsights,
+      },
+      { headers: READ_CACHE_HEADERS }
+    );
   } catch (error) {
     console.error('Error fetching global insights:', error);
     return NextResponse.json(

@@ -1,23 +1,4 @@
 vehicle_type,risky_crossing_rate(%),run_red_light_rate(%)
-bicycle,30.0,15.0
-bus,33.33333333333333,0.0
-car,25.806451612903224,8.064516129032258
-motorbike,37.93103448275862,6.896551724137931
-truck,16.666666666666664,0.0
-ambulance,,
-army vehicle,,
-auto rickshaw,,
-garbagevan,,
-human hauler,,
-minibus,,
-minivan,,
-pickup,,
-policecar,,
-rickshaw,,
-scooter,,
-suv,,
-taxi,,
-three wheelers -CNG-,,
-van,,
-wheelbarrow,,
-Total,,
+bus,100.0,0.0
+motorbike,100.0,0.0
+three wheelers,100.0,0.0
