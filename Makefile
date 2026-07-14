@@ -3,6 +3,7 @@
 
 .PHONY: help install setup build start dev stop clean logs test lint format
 .PHONY: db-setup db-reset db-aggregate db-refresh-views db-pipeline
+.PHONY: db-migrate-localization-fields db-import-video-coordinates
 .PHONY: geonames-update geonames-report geonames-help
 .PHONY: full-pipeline check-env check-deps
 .PHONY: aggregate-crawler-data aggregate-crawler-data-verbose
@@ -343,8 +344,29 @@ db-generate-insights-dry: ## Test insights generation without updating database
 		exit 1; \
 	fi
 
-db-pipeline: db-aggregate fix-encoding-mapping db-refresh-views db-generate-insights ## Complete database update pipeline
+db-pipeline: db-aggregate db-import-video-coordinates fix-encoding-mapping db-refresh-views db-generate-insights ## Complete database update pipeline
 	@echo "$(GREEN)✓ Database pipeline complete (with insights)$(NC)"
+
+db-migrate-localization-fields: ## Add localization provenance columns (street name, confidence, status)
+	@echo "$(BLUE)Applying localization fields migration...$(NC)"
+	@if [ -f .env.local ]; then \
+		export $$(grep -v '^#' .env.local | grep -v '^$$' | xargs) && \
+		psql $$DATABASE_URL -f scripts/migrate-add-localization-fields.sql; \
+		echo "$(GREEN)✓ Localization fields migration complete$(NC)"; \
+	else \
+		echo "$(RED)Error: .env.local file not found$(NC)"; \
+		exit 1; \
+	fi
+
+db-import-video-coordinates: ## Import REAL video coordinates from PedX-Insight localization
+	@echo "$(BLUE)Importing real video coordinates...$(NC)"
+	@if [ -f summary_data/all_video_locations.csv ] || [ -n "$$VIDEO_LOCATIONS_CSV" ]; then \
+		node scripts/import-video-coordinates.js; \
+		echo "$(GREEN)✓ Real video coordinates imported$(NC)"; \
+	else \
+		echo "$(YELLOW)No summary_data/all_video_locations.csv — skipping coordinate import$(NC)"; \
+		echo "$(YELLOW)(produce it in PedX-Insight: python get_all_video_locations.py)$(NC)"; \
+	fi
 
 db-refresh-all: db-refresh-views db-generate-insights ## Refresh views and regenerate insights
 	@echo "$(GREEN)✓ All database refreshes complete$(NC)"

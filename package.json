@@ -13,7 +13,9 @@
     "setup-db": "node scripts/setup-database.js",
     "aggregate-csv": "node scripts/aggregate-csv-data.js",
     "aggregate-csv-fresh": "node scripts/aggregate-csv-data.js --fresh",
-    "aggregate-csv-verbose": "node scripts/aggregate-csv-data.js --verbose"
+    "aggregate-csv-verbose": "node scripts/aggregate-csv-data.js --verbose",
+    "import-video-coordinates": "node scripts/import-video-coordinates.js",
+    "import-video-coordinates-dry": "node scripts/import-video-coordinates.js --dry-run"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.16",

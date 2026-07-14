@@ -2,7 +2,37 @@
 
 This guide explains how to set up video coordinates in the database and display them on the Globe.
 
-## Quick Start
+## Real coordinates from PedX-Insight localization (recommended)
+
+PedX-Insight can estimate WHERE each video was filmed directly from the footage
+(via its vendored Monocular-OSM-Localization tool) — no GPS needed. That replaces
+the mock coordinates below with real per-video positions, plus street name and a
+confidence level shown on the Globe marker hover.
+
+1. **In PedX-Insight** (sibling repo), localize the videos and aggregate:
+   ```bash
+   python main.py --mode localize --source_video_path PATH/TO/VIDEO --city "City, Country"
+   # or batch: python run.py --localize
+   python get_all_video_locations.py   # -> summary_data/all_video_locations.csv
+   ```
+2. **Migrate the database once** (adds street_name / localization_confidence / localization_status):
+   ```bash
+   make db-migrate-localization-fields
+   ```
+3. **Import the real coordinates** (overwrites mock coordinates for localized videos):
+   ```bash
+   node scripts/import-video-coordinates.js --csv ../PedX-Insight/summary_data/all_video_locations.csv
+   # or copy the CSV into ./summary_data/ and: make db-import-video-coordinates
+   # dry run first: npm run import-video-coordinates-dry
+   ```
+4. Restart the dev server and select the city — the video markers move to their
+   real estimated positions; hover shows street + confidence.
+
+`make db-pipeline` now runs the import automatically when
+`summary_data/all_video_locations.csv` is present. The mock-coordinate script below
+remains available as a dev-only fallback for videos that haven't been localized.
+
+## Quick Start (mock coordinates, dev-only)
 
 1. **Run the migration** to add coordinate columns to the videos table:
    ```bash

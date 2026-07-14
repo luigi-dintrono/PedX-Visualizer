@@ -19,6 +19,14 @@ export async function GET(
         v.total_pedestrians,
         v.latitude,
         v.longitude,
+        v.localization_confidence,
+        v.street_name,
+        v.localization_status,
+        v.risky_crossing_ratio,
+        v.run_red_light_ratio,
+        v.crosswalk_usage_ratio,
+        v.phone_usage_ratio,
+        v.main_weather,
         c.city,
         c.country,
         c.latitude as city_latitude,
@@ -41,6 +49,10 @@ export async function GET(
       longitude: row.longitude != null ? parseFloat(row.longitude) : null,
       city_latitude: row.city_latitude != null ? parseFloat(row.city_latitude) : null,
       city_longitude: row.city_longitude != null ? parseFloat(row.city_longitude) : null,
+      risky_crossing_ratio: row.risky_crossing_ratio != null ? parseFloat(row.risky_crossing_ratio) : null,
+      run_red_light_ratio: row.run_red_light_ratio != null ? parseFloat(row.run_red_light_ratio) : null,
+      crosswalk_usage_ratio: row.crosswalk_usage_ratio != null ? parseFloat(row.crosswalk_usage_ratio) : null,
+      phone_usage_ratio: row.phone_usage_ratio != null ? parseFloat(row.phone_usage_ratio) : null,
     }));
     
     return NextResponse.json({

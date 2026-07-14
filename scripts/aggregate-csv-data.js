@@ -251,10 +251,13 @@ class DatabaseAggregator {
                 readCSV(path.join(CSV_DIR, 'all_pedestrian_info.csv'))
             ]);
             
-            // Create time data lookup
+            // Create time data lookup.
+            // Prefer joining by link (YouTube id) — newer all_time_info.csv from
+            // PedX-Insight carries it. The old duration_seconds string-equality join is
+            // kept only as a fallback for legacy CSVs (it is collision-prone).
             const timeMap = new Map();
             for (const row of timeData) {
-                timeMap.set(row.duration_seconds, row.analysis_seconds);
+                timeMap.set(row.link !== undefined ? row.link : row.duration_seconds, row.analysis_seconds);
             }
 
             // Process cities first
@@ -412,7 +415,8 @@ class DatabaseAggregator {
                     city_link: cleanString(row.city_link || `${row.city}_${row.link}`),
                     duration_seconds: safeNumeric(row.duration_seconds),
                     total_frames: safeInteger(row.total_frames),
-                    analysis_seconds: safeNumeric(timeMap.get(row.duration_seconds)),
+                    // link-keyed map for new CSVs; duration-keyed fallback for legacy ones
+                    analysis_seconds: safeNumeric(timeMap.get(cleanString(row.link)) ?? timeMap.get(row.duration_seconds)),
                     total_pedestrians: safeInteger(row.total_pedestrians),
                     total_crossed_pedestrians: safeInteger(row.total_crossed_pedestrians),
                     average_age: safeNumeric(row.average_age),
@@ -736,7 +740,12 @@ class DatabaseAggregator {
 
     async processStatsFile(filename, data) {
         log(`Processing stats file: ${filename}`);
-        
+
+        // Idempotency: facts have no unique constraint, so re-running the aggregator
+        // would duplicate every row. Replace this file's facts wholesale (scoped by
+        // data_source) before inserting the fresh ones.
+        await pool.query('DELETE FROM analytics_facts WHERE data_source = $1', [filename]);
+
         for (const row of data) {
             try {
                 // Process each column in the row
@@ -906,8 +915,11 @@ class DatabaseAggregator {
     }
 
     getDimensionValue(row, dimensionColumn) {
-        if (dimensionColumn.includes('_')) {
-            // Handle composite keys like weather_daytime
+        // Only weather_daytime is a genuine composite (built from the weather + daytime
+        // columns). Splitting every '_'-containing column name broke real single columns
+        // like vehicle_type / clothing_type / environment_factor, whose rows have no
+        // 'vehicle'/'type'/... parts — their dimension values silently became ''.
+        if (dimensionColumn === 'weather_daytime' && row[dimensionColumn] === undefined) {
             const parts = dimensionColumn.split('_');
             return parts.map(part => row[part]).filter(Boolean).join('_');
         }

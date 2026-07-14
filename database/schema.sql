@@ -104,6 +104,11 @@ CREATE TABLE videos (
     -- Geographic coordinates (optional - if null, use city coordinates)
     latitude DECIMAL(10, 8),
     longitude DECIMAL(11, 8),
+    -- Localization provenance (real coordinates from PedX-Insight --mode localize,
+    -- imported by scripts/import-video-coordinates.js)
+    localization_confidence VARCHAR(16), -- high / medium / low
+    street_name VARCHAR(255),
+    localization_status VARCHAR(32), -- ok / no_position / osm_env_not_configured / ...
     -- Temporal tracking (for historical data analysis)
     data_collected_date DATE, -- When data was originally collected
     import_batch_id INTEGER REFERENCES import_batches(id), -- Which import batch added this data
@@ -454,7 +459,11 @@ SELECT
     -- Calculated rates
     COUNT(CASE WHEN p.risky_crossing THEN 1 END)::FLOAT / NULLIF(COUNT(p.id), 0) as actual_risky_crossing_rate,
     COUNT(CASE WHEN p.run_red_light THEN 1 END)::FLOAT / NULLIF(COUNT(p.id), 0) as actual_run_red_light_rate,
-    COUNT(CASE WHEN p.crosswalk_use_or_not THEN 1 END)::FLOAT / NULLIF(COUNT(p.id), 0) as actual_crosswalk_usage_rate
+    COUNT(CASE WHEN p.crosswalk_use_or_not THEN 1 END)::FLOAT / NULLIF(COUNT(p.id), 0) as actual_crosswalk_usage_rate,
+    -- Localization metadata (from PedX-Insight)
+    v.localization_confidence,
+    v.street_name,
+    v.localization_status
 FROM videos v
 LEFT JOIN cities c ON v.city_id = c.id
 LEFT JOIN pedestrians p ON v.id = p.video_id
@@ -464,7 +473,8 @@ GROUP BY v.id, v.video_name, v.link, v.city_link, v.latitude, v.longitude, c.cit
          v.risky_crossing_ratio, v.run_red_light_ratio, v.crosswalk_usage_ratio,
          v.traffic_signs_ratio, v.total_vehicles, v.top3_vehicles, v.main_weather,
          v.sidewalk_prob, v.crosswalk_prob, v.traffic_light_prob, v.avg_road_width,
-         v.crossing_time, v.crossing_speed;
+         v.crossing_time, v.crossing_speed, v.localization_confidence, v.street_name,
+         v.localization_status;
 
 -- v_pedestrian_behavior: Demographic stats per city
 CREATE OR REPLACE VIEW v_pedestrian_behavior AS

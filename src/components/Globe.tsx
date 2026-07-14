@@ -256,6 +256,11 @@ interface VideoData {
   longitude: number | null;
   city_latitude: number | null;
   city_longitude: number | null;
+  // Localization provenance (real coords from PedX-Insight; null when mock/fallback)
+  localization_confidence: string | null;
+  street_name: string | null;
+  localization_status: string | null;
+  risky_crossing_ratio: number | null;
 }
 
 export default function Globe() {
@@ -841,7 +846,17 @@ export default function Globe() {
           horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
         },
         label: {
-          text: `${video.video_name}\n${video.link}\nClick to open video`,
+          text: [
+            video.video_name,
+            video.link,
+            // Real localization provenance, when present (PedX-Insight --mode localize)
+            video.street_name ? `📍 ${video.street_name}` : null,
+            video.localization_confidence ? `Localization: ${video.localization_confidence} confidence` : null,
+            video.risky_crossing_ratio != null
+              ? `Risky crossing: ${(video.risky_crossing_ratio * 100).toFixed(0)}%`
+              : null,
+            'Click to open video',
+          ].filter(Boolean).join('\n'),
           font: '12pt sans-serif',
           fillColor: Cesium.Color.WHITE,
           outlineColor: Cesium.Color.BLACK,
