@@ -109,6 +109,8 @@ CREATE TABLE videos (
     localization_confidence VARCHAR(16), -- high / medium / low
     street_name VARCHAR(255),
     localization_status VARCHAR(32), -- ok / no_position / osm_env_not_configured / ...
+    localization_spread_m NUMERIC, -- confidence_spread_m: uncertainty radius (metres)
+    localization_candidates JSONB, -- ranked candidates [{rank,latitude,longitude,street_names[],support,google_maps_url}]
     -- Temporal tracking (for historical data analysis)
     data_collected_date DATE, -- When data was originally collected
     import_batch_id INTEGER REFERENCES import_batches(id), -- Which import batch added this data
@@ -367,8 +369,46 @@ ORDER BY af.metric_name, ad.dimension_type;
 -- ===============================================
 
 -- v_city_summary: Powers Cesium map (heatmap, markers)
+-- NOTE: video-level and pedestrian-level metrics are aggregated in SEPARATE CTEs joined on
+-- city_id. Joining cities -> videos -> pedestrians in one query and then AVG()-ing video columns
+-- fans out each video row once per pedestrian, silently pedestrian-weighting every per-video
+-- average. See scripts/migrate-fix-aggregation-fanout.sql.
 CREATE OR REPLACE VIEW v_city_summary AS
-SELECT 
+WITH vid AS (
+    SELECT
+        city_id,
+        COUNT(*)                        AS total_videos,
+        AVG(duration_seconds)           AS avg_video_duration,
+        AVG(total_pedestrians)          AS avg_pedestrians_per_video,
+        AVG(risky_crossing_ratio)       AS avg_risky_crossing_ratio,
+        AVG(run_red_light_ratio)        AS avg_run_red_light_ratio,
+        AVG(crosswalk_usage_ratio)      AS avg_crosswalk_usage_ratio,
+        AVG(crossing_speed)             AS avg_crossing_speed,
+        AVG(crossing_time)              AS avg_crossing_time,
+        AVG(phone_usage_ratio)          AS avg_phone_usage_ratio,
+        AVG(avg_road_width)             AS avg_road_width,
+        MIN(data_collected_date)        AS earliest_data_date,
+        MAX(data_collected_date)        AS latest_data_date,
+        MIN(first_imported_at)          AS earliest_import_date,
+        MAX(last_updated_at)            AS latest_update_date,
+        COUNT(DISTINCT import_batch_id) AS import_batch_count
+    FROM videos
+    GROUP BY city_id
+),
+ped AS (
+    SELECT
+        v.city_id,
+        COUNT(p.id)                                                                     AS total_pedestrians,
+        AVG(p.age)                                                                      AS avg_pedestrian_age,
+        COUNT(*) FILTER (WHERE p.risky_crossing)::FLOAT      / NULLIF(COUNT(p.id), 0)   AS risky_crossing_rate,
+        COUNT(*) FILTER (WHERE p.run_red_light)::FLOAT       / NULLIF(COUNT(p.id), 0)   AS run_red_light_rate,
+        COUNT(*) FILTER (WHERE p.crosswalk_use_or_not)::FLOAT/ NULLIF(COUNT(p.id), 0)   AS crosswalk_usage_rate,
+        COUNT(*) FILTER (WHERE p.phone_using)::FLOAT         / NULLIF(COUNT(p.id), 0)   AS phone_usage_rate
+    FROM pedestrians p
+    JOIN videos v ON v.id = p.video_id
+    GROUP BY v.city_id
+)
+SELECT
     c.id,
     c.city,
     c.country,
@@ -380,41 +420,34 @@ SELECT
     c.literacy_rate,
     c.gini,
     c.insights,
-    -- Aggregated metrics
-    COUNT(DISTINCT v.id) as total_videos,
-    COUNT(DISTINCT p.id) as total_pedestrians,
-    AVG(v.duration_seconds) as avg_video_duration,
-    AVG(v.total_pedestrians) as avg_pedestrians_per_video,
-    AVG(v.risky_crossing_ratio) as avg_risky_crossing_ratio,
-    AVG(v.run_red_light_ratio) as avg_run_red_light_ratio,
-    AVG(v.crosswalk_usage_ratio) as avg_crosswalk_usage_ratio,
-    AVG(p.age) as avg_pedestrian_age,
-    -- Additional behavior metrics for heatmap
-    AVG(v.crossing_speed) as avg_crossing_speed,
-    AVG(v.crossing_time) as avg_crossing_time,
-    AVG(v.phone_usage_ratio) as avg_phone_usage_ratio,
-    AVG(v.avg_road_width) as avg_road_width,
-    -- Calculated rates
-    COUNT(CASE WHEN p.risky_crossing THEN 1 END)::FLOAT / NULLIF(COUNT(p.id), 0) as risky_crossing_rate,
-    COUNT(CASE WHEN p.run_red_light THEN 1 END)::FLOAT / NULLIF(COUNT(p.id), 0) as run_red_light_rate,
-    COUNT(CASE WHEN p.crosswalk_use_or_not THEN 1 END)::FLOAT / NULLIF(COUNT(p.id), 0) as crosswalk_usage_rate,
-    COUNT(CASE WHEN p.phone_using THEN 1 END)::FLOAT / NULLIF(COUNT(p.id), 0) as phone_usage_rate,
-    -- Heatmap intensity (composite score)
+    COALESCE(vid.total_videos, 0)      AS total_videos,
+    COALESCE(ped.total_pedestrians, 0) AS total_pedestrians,
+    vid.avg_video_duration,
+    vid.avg_pedestrians_per_video,
+    vid.avg_risky_crossing_ratio,
+    vid.avg_run_red_light_ratio,
+    vid.avg_crosswalk_usage_ratio,
+    ped.avg_pedestrian_age,
+    vid.avg_crossing_speed,
+    vid.avg_crossing_time,
+    vid.avg_phone_usage_ratio,
+    vid.avg_road_width,
+    ped.risky_crossing_rate,
+    ped.run_red_light_rate,
+    ped.crosswalk_usage_rate,
+    ped.phone_usage_rate,
     COALESCE(
-        (AVG(v.risky_crossing_ratio) + AVG(v.run_red_light_ratio)) / 2, 
-        COUNT(CASE WHEN p.risky_crossing THEN 1 END)::FLOAT / NULLIF(COUNT(p.id), 0)
+        (vid.avg_risky_crossing_ratio + vid.avg_run_red_light_ratio) / 2,
+        ped.risky_crossing_rate
     ) as risk_intensity,
-    -- Temporal metadata (for reference, not filtering - shows data range)
-    MIN(v.data_collected_date) as earliest_data_date,
-    MAX(v.data_collected_date) as latest_data_date,
-    MIN(v.first_imported_at) as earliest_import_date,
-    MAX(v.last_updated_at) as latest_update_date,
-    COUNT(DISTINCT v.import_batch_id) as import_batch_count
+    vid.earliest_data_date,
+    vid.latest_data_date,
+    vid.earliest_import_date,
+    vid.latest_update_date,
+    vid.import_batch_count
 FROM cities c
-LEFT JOIN videos v ON c.id = v.city_id
-LEFT JOIN pedestrians p ON v.id = p.video_id
-GROUP BY c.id, c.city, c.country, c.continent, c.latitude, c.longitude, 
-         c.population_city, c.traffic_mortality, c.literacy_rate, c.gini, c.insights;
+LEFT JOIN vid ON vid.city_id = c.id
+LEFT JOIN ped ON ped.city_id = c.id;
 
 -- v_video_summary: Video-level drilldowns
 CREATE OR REPLACE VIEW v_video_summary AS
@@ -600,7 +633,24 @@ ORDER BY c.city, af.metric_name, af.value_numeric DESC NULLS LAST;
 
 -- mv_rank_crossing_speed: Materialized view for Top-N rankings
 CREATE MATERIALIZED VIEW mv_rank_crossing_speed AS
-SELECT 
+WITH vid AS (
+    SELECT
+        city_id,
+        AVG(crossing_speed)        AS avg_crossing_speed,
+        AVG(risky_crossing_ratio)  AS avg_risky_crossing_ratio,
+        AVG(run_red_light_ratio)   AS avg_run_red_light_ratio,
+        AVG(crosswalk_usage_ratio) AS avg_crosswalk_usage_ratio,
+        COUNT(*)                   AS video_count
+    FROM videos
+    GROUP BY city_id
+),
+ped AS (
+    SELECT v.city_id, COUNT(p.id) AS pedestrian_count
+    FROM pedestrians p
+    JOIN videos v ON v.id = p.video_id
+    GROUP BY v.city_id
+)
+SELECT
     c.id as city_id,
     c.city,
     c.country,
@@ -608,117 +658,225 @@ SELECT
     c.latitude,
     c.longitude,
     -- Speed rankings
-    RANK() OVER (ORDER BY AVG(v.crossing_speed) DESC NULLS LAST) as crossing_speed_rank,
-    RANK() OVER (ORDER BY AVG(v.risky_crossing_ratio) DESC NULLS LAST) as risky_crossing_rank,
-    RANK() OVER (ORDER BY AVG(v.run_red_light_ratio) DESC NULLS LAST) as run_red_light_rank,
-    RANK() OVER (ORDER BY AVG(v.crosswalk_usage_ratio) DESC NULLS LAST) as crosswalk_usage_rank,
+    RANK() OVER (ORDER BY vid.avg_crossing_speed DESC NULLS LAST) as crossing_speed_rank,
+    RANK() OVER (ORDER BY vid.avg_risky_crossing_ratio DESC NULLS LAST) as risky_crossing_rank,
+    RANK() OVER (ORDER BY vid.avg_run_red_light_ratio DESC NULLS LAST) as run_red_light_rank,
+    RANK() OVER (ORDER BY vid.avg_crosswalk_usage_ratio DESC NULLS LAST) as crosswalk_usage_rank,
     -- Actual values
-    AVG(v.crossing_speed) as avg_crossing_speed,
-    AVG(v.risky_crossing_ratio) as avg_risky_crossing_ratio,
-    AVG(v.run_red_light_ratio) as avg_run_red_light_ratio,
-    AVG(v.crosswalk_usage_ratio) as avg_crosswalk_usage_ratio,
+    vid.avg_crossing_speed,
+    vid.avg_risky_crossing_ratio,
+    vid.avg_run_red_light_ratio,
+    vid.avg_crosswalk_usage_ratio,
     -- Percentiles
-    PERCENT_RANK() OVER (ORDER BY AVG(v.crossing_speed)) as crossing_speed_percentile,
-    PERCENT_RANK() OVER (ORDER BY AVG(v.risky_crossing_ratio)) as risky_crossing_percentile,
-    PERCENT_RANK() OVER (ORDER BY AVG(v.run_red_light_ratio)) as run_red_light_percentile,
-    PERCENT_RANK() OVER (ORDER BY AVG(v.crosswalk_usage_ratio)) as crosswalk_usage_percentile,
+    PERCENT_RANK() OVER (ORDER BY vid.avg_crossing_speed) as crossing_speed_percentile,
+    PERCENT_RANK() OVER (ORDER BY vid.avg_risky_crossing_ratio) as risky_crossing_percentile,
+    PERCENT_RANK() OVER (ORDER BY vid.avg_run_red_light_ratio) as run_red_light_percentile,
+    PERCENT_RANK() OVER (ORDER BY vid.avg_crosswalk_usage_ratio) as crosswalk_usage_percentile,
     -- Context
-    COUNT(DISTINCT v.id) as video_count,
-    COUNT(DISTINCT p.id) as pedestrian_count
+    COALESCE(vid.video_count, 0) as video_count,
+    COALESCE(ped.pedestrian_count, 0) as pedestrian_count
 FROM cities c
-LEFT JOIN videos v ON c.id = v.city_id
-LEFT JOIN pedestrians p ON v.id = p.video_id
-GROUP BY c.id, c.city, c.country, c.continent, c.latitude, c.longitude;
+LEFT JOIN vid ON vid.city_id = c.id
+LEFT JOIN ped ON ped.city_id = c.id;
 
 -- Create index on materialized view
 CREATE INDEX IF NOT EXISTS idx_mv_rank_crossing_speed_city ON mv_rank_crossing_speed(city_id);
 CREATE INDEX IF NOT EXISTS idx_mv_rank_crossing_speed_continent ON mv_rank_crossing_speed(continent);
 
 -- mv_global_insights: Materialized view for global baselines
+-- video-level and pedestrian-level baselines computed separately to avoid pedestrian-count
+-- weighting of the per-video averages/medians (see migrate-fix-aggregation-fanout.sql).
 CREATE MATERIALIZED VIEW mv_global_insights AS
-SELECT 
+SELECT
     'global_baselines' as insight_type,
-    -- Global averages
-    AVG(v.crossing_speed) as global_avg_crossing_speed,
-    AVG(v.risky_crossing_ratio) as global_avg_risky_crossing_ratio,
-    AVG(v.run_red_light_ratio) as global_avg_run_red_light_ratio,
-    AVG(v.crosswalk_usage_ratio) as global_avg_crosswalk_usage_ratio,
-    AVG(p.age) as global_avg_pedestrian_age,
-    -- Global medians
-    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY v.crossing_speed) as global_median_crossing_speed,
-    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY v.risky_crossing_ratio) as global_median_risky_crossing_ratio,
-    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY v.run_red_light_ratio) as global_median_run_red_light_ratio,
-    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY v.crosswalk_usage_ratio) as global_median_crosswalk_usage_ratio,
-    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY p.age) as global_median_pedestrian_age,
-    -- Global percentiles (for context)
-    PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY v.crossing_speed) as global_q1_crossing_speed,
-    PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY v.crossing_speed) as global_q3_crossing_speed,
-    PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY v.risky_crossing_ratio) as global_q1_risky_crossing_ratio,
-    PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY v.risky_crossing_ratio) as global_q3_risky_crossing_ratio,
-    -- Counts
-    COUNT(DISTINCT c.id) as total_cities,
-    COUNT(DISTINCT v.id) as total_videos,
-    COUNT(DISTINCT p.id) as total_pedestrians,
-    -- Behavioral rates
-    COUNT(CASE WHEN p.risky_crossing THEN 1 END)::FLOAT / NULLIF(COUNT(p.id), 0) as global_risky_crossing_rate,
-    COUNT(CASE WHEN p.run_red_light THEN 1 END)::FLOAT / NULLIF(COUNT(p.id), 0) as global_run_red_light_rate,
-    COUNT(CASE WHEN p.crosswalk_use_or_not THEN 1 END)::FLOAT / NULLIF(COUNT(p.id), 0) as global_crosswalk_usage_rate,
-    COUNT(CASE WHEN p.phone_using THEN 1 END)::FLOAT / NULLIF(COUNT(p.id), 0) as global_phone_usage_rate
-FROM cities c
-LEFT JOIN videos v ON c.id = v.city_id
-LEFT JOIN pedestrians p ON v.id = p.video_id;
+    vid.global_avg_crossing_speed,
+    vid.global_avg_risky_crossing_ratio,
+    vid.global_avg_run_red_light_ratio,
+    vid.global_avg_crosswalk_usage_ratio,
+    ped.global_avg_pedestrian_age,
+    vid.global_median_crossing_speed,
+    vid.global_median_risky_crossing_ratio,
+    vid.global_median_run_red_light_ratio,
+    vid.global_median_crosswalk_usage_ratio,
+    ped.global_median_pedestrian_age,
+    vid.global_q1_crossing_speed,
+    vid.global_q3_crossing_speed,
+    vid.global_q1_risky_crossing_ratio,
+    vid.global_q3_risky_crossing_ratio,
+    cnt.total_cities,
+    vid.total_videos,
+    ped.total_pedestrians,
+    ped.global_risky_crossing_rate,
+    ped.global_run_red_light_rate,
+    ped.global_crosswalk_usage_rate,
+    ped.global_phone_usage_rate,
+    -- NEW: localization coverage + built-environment baselines
+    vid.global_localized_videos,
+    vid.global_avg_road_width,
+    vid.global_avg_pedestrians_per_video,
+    vid.global_avg_vehicles_per_video,
+    vid.global_avg_traffic_light_prob,
+    vid.global_avg_crosswalk_prob,
+    vid.global_avg_sidewalk_prob,
+    vid.global_avg_accident_prob
+FROM
+    (SELECT
+        AVG(crossing_speed)        AS global_avg_crossing_speed,
+        AVG(risky_crossing_ratio)  AS global_avg_risky_crossing_ratio,
+        AVG(run_red_light_ratio)   AS global_avg_run_red_light_ratio,
+        AVG(crosswalk_usage_ratio) AS global_avg_crosswalk_usage_ratio,
+        PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY crossing_speed)        AS global_median_crossing_speed,
+        PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY risky_crossing_ratio)  AS global_median_risky_crossing_ratio,
+        PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY run_red_light_ratio)   AS global_median_run_red_light_ratio,
+        PERCENTILE_CONT(0.5)  WITHIN GROUP (ORDER BY crosswalk_usage_ratio) AS global_median_crosswalk_usage_ratio,
+        PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY crossing_speed)        AS global_q1_crossing_speed,
+        PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY crossing_speed)        AS global_q3_crossing_speed,
+        PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY risky_crossing_ratio)  AS global_q1_risky_crossing_ratio,
+        PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY risky_crossing_ratio)  AS global_q3_risky_crossing_ratio,
+        COUNT(*) AS total_videos,
+        COUNT(*) FILTER (WHERE localization_status = 'ok') AS global_localized_videos,
+        AVG(avg_road_width)        AS global_avg_road_width,
+        AVG(total_pedestrians)     AS global_avg_pedestrians_per_video,
+        AVG(total_vehicles)        AS global_avg_vehicles_per_video,
+        AVG(traffic_light_prob)    AS global_avg_traffic_light_prob,
+        AVG(crosswalk_prob)        AS global_avg_crosswalk_prob,
+        AVG(sidewalk_prob)         AS global_avg_sidewalk_prob,
+        AVG(accident_prob)         AS global_avg_accident_prob
+     FROM videos) vid
+CROSS JOIN
+    (SELECT
+        AVG(age) AS global_avg_pedestrian_age,
+        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY age) AS global_median_pedestrian_age,
+        COUNT(*) AS total_pedestrians,
+        COUNT(*) FILTER (WHERE risky_crossing)::FLOAT      / NULLIF(COUNT(*), 0) AS global_risky_crossing_rate,
+        COUNT(*) FILTER (WHERE run_red_light)::FLOAT       / NULLIF(COUNT(*), 0) AS global_run_red_light_rate,
+        COUNT(*) FILTER (WHERE crosswalk_use_or_not)::FLOAT/ NULLIF(COUNT(*), 0) AS global_crosswalk_usage_rate,
+        COUNT(*) FILTER (WHERE phone_using)::FLOAT         / NULLIF(COUNT(*), 0) AS global_phone_usage_rate
+     FROM pedestrians) ped
+CROSS JOIN
+    (SELECT COUNT(*) AS total_cities FROM cities) cnt;
 
 -- mv_city_insights: Pre-computed insights data per city
+-- video-level and pedestrian-level metrics aggregated in separate CTEs (no fan-out).
+-- Adds crosswalk_usage_rank so /api/metrics/crosswalk_usage can read it here.
 CREATE MATERIALIZED VIEW mv_city_insights AS
-SELECT 
-    c.id as city_id,
-    c.city,
-    c.country,
-    c.continent,
-    
-    -- Video and pedestrian counts
-    COUNT(DISTINCT v.id) as video_count,
-    COUNT(DISTINCT p.id) as pedestrian_count,
-    
-    -- Speed metrics
-    AVG(v.crossing_speed) as avg_crossing_speed,
-    RANK() OVER (ORDER BY AVG(v.crossing_speed) DESC NULLS LAST) as speed_rank,
-    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY v.crossing_speed) as median_crossing_speed,
-    
-    -- Behavioral metrics
-    AVG(v.risky_crossing_ratio) as avg_risky_crossing_ratio,
-    AVG(v.run_red_light_ratio) as avg_run_red_light_ratio,
-    AVG(v.crosswalk_usage_ratio) as avg_crosswalk_usage_ratio,
-    RANK() OVER (ORDER BY AVG(v.risky_crossing_ratio) DESC NULLS LAST) as risky_rank,
-    RANK() OVER (ORDER BY AVG(v.run_red_light_ratio) DESC NULLS LAST) as red_light_rank,
-    
-    -- Demographics
-    AVG(p.age) as avg_age,
-    COUNT(CASE WHEN p.gender = 'male' THEN 1 END)::FLOAT / NULLIF(COUNT(p.id), 0) as male_ratio,
-    COUNT(CASE WHEN p.phone_using THEN 1 END)::FLOAT / NULLIF(COUNT(p.id), 0) as phone_usage_ratio,
-    
-    -- Weather composition (most common weather)
-    MODE() WITHIN GROUP (ORDER BY v.main_weather) as dominant_weather,
-    COUNT(DISTINCT v.main_weather) as weather_variety,
-    
-    -- Top vehicles (aggregate from videos)
-    string_agg(DISTINCT v.top3_vehicles, ', ') FILTER (WHERE v.top3_vehicles IS NOT NULL) as vehicles_list,
-    
-    -- Road width
-    AVG(v.avg_road_width) as avg_road_width,
-    
-    -- Crossing time
-    AVG(v.crossing_time) as avg_crossing_time,
-    
-    -- Continent rank
-    RANK() OVER (PARTITION BY c.continent ORDER BY AVG(v.crossing_speed) DESC NULLS LAST) as continent_speed_rank,
-    COUNT(DISTINCT c2.id) FILTER (WHERE c2.continent = c.continent) as cities_in_continent
-    
-FROM cities c
-LEFT JOIN cities c2 ON c2.continent = c.continent  -- For continent counts
-LEFT JOIN videos v ON c.id = v.city_id
-LEFT JOIN pedestrians p ON v.id = p.video_id
-GROUP BY c.id, c.city, c.country, c.continent;
+WITH vid AS (
+    SELECT
+        city_id,
+        COUNT(*)                   AS video_count,
+        AVG(crossing_speed)        AS avg_crossing_speed,
+        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY crossing_speed) AS median_crossing_speed,
+        AVG(risky_crossing_ratio)  AS avg_risky_crossing_ratio,
+        AVG(run_red_light_ratio)   AS avg_run_red_light_ratio,
+        AVG(crosswalk_usage_ratio) AS avg_crosswalk_usage_ratio,
+        AVG(avg_road_width)        AS avg_road_width,
+        AVG(crossing_time)         AS avg_crossing_time,
+        MODE() WITHIN GROUP (ORDER BY main_weather) AS dominant_weather,
+        COUNT(DISTINCT main_weather) AS weather_variety,
+        string_agg(DISTINCT top3_vehicles, ', ') FILTER (WHERE top3_vehicles IS NOT NULL) AS vehicles_list,
+        -- NEW: localization coverage + built-environment + density
+        COUNT(*) FILTER (WHERE localization_status = 'ok') AS videos_localized,
+        (array_agg(street_name) FILTER (WHERE localization_status = 'ok' AND street_name IS NOT NULL))[1] AS localized_street,
+        AVG(total_pedestrians)     AS avg_pedestrians_per_video,
+        AVG(total_vehicles)        AS avg_vehicles_per_video,
+        AVG(traffic_light_prob)    AS avg_traffic_light_prob,
+        AVG(crosswalk_prob)        AS avg_crosswalk_prob,
+        AVG(sidewalk_prob)         AS avg_sidewalk_prob,
+        AVG(accident_prob)         AS avg_accident_prob,
+        AVG(crack_prob)            AS avg_crack_prob,
+        AVG(potholes_prob)         AS avg_potholes_prob,
+        AVG(traffic_signs_ratio)   AS avg_traffic_signs_ratio
+    FROM videos
+    GROUP BY city_id
+),
+ped AS (
+    SELECT
+        v.city_id,
+        COUNT(p.id) AS pedestrian_count,
+        AVG(p.age)  AS avg_age,
+        COUNT(*) FILTER (WHERE p.gender = 'male')::FLOAT / NULLIF(COUNT(p.id), 0) AS male_ratio,
+        COUNT(*) FILTER (WHERE p.phone_using)::FLOAT     / NULLIF(COUNT(p.id), 0) AS phone_usage_ratio
+    FROM pedestrians p
+    JOIN videos v ON v.id = p.video_id
+    GROUP BY v.city_id
+),
+base AS (
+    SELECT
+        c.id as city_id,
+        c.city,
+        c.country,
+        c.continent,
+        c.med_age AS city_med_age,
+        COALESCE(vid.video_count, 0)      as video_count,
+        COALESCE(ped.pedestrian_count, 0) as pedestrian_count,
+        vid.avg_crossing_speed,
+        vid.median_crossing_speed,
+        vid.avg_risky_crossing_ratio,
+        vid.avg_run_red_light_ratio,
+        vid.avg_crosswalk_usage_ratio,
+        ped.avg_age,
+        ped.male_ratio,
+        ped.phone_usage_ratio,
+        vid.dominant_weather,
+        vid.weather_variety,
+        vid.vehicles_list,
+        vid.avg_road_width,
+        vid.avg_crossing_time,
+        vid.videos_localized,
+        vid.localized_street,
+        vid.avg_pedestrians_per_video,
+        vid.avg_vehicles_per_video,
+        vid.avg_traffic_light_prob,
+        vid.avg_crosswalk_prob,
+        vid.avg_sidewalk_prob,
+        vid.avg_accident_prob,
+        vid.avg_crack_prob,
+        vid.avg_potholes_prob,
+        vid.avg_traffic_signs_ratio
+    FROM cities c
+    LEFT JOIN vid ON vid.city_id = c.id
+    LEFT JOIN ped ON ped.city_id = c.id
+)
+SELECT
+    base.city_id,
+    base.city,
+    base.country,
+    base.continent,
+    base.city_med_age,
+    base.video_count,
+    base.pedestrian_count,
+    base.avg_crossing_speed,
+    RANK() OVER (ORDER BY base.avg_crossing_speed DESC NULLS LAST) as speed_rank,
+    base.median_crossing_speed,
+    base.avg_risky_crossing_ratio,
+    base.avg_run_red_light_ratio,
+    base.avg_crosswalk_usage_ratio,
+    RANK() OVER (ORDER BY base.avg_risky_crossing_ratio DESC NULLS LAST) as risky_rank,
+    RANK() OVER (ORDER BY base.avg_run_red_light_ratio DESC NULLS LAST) as red_light_rank,
+    RANK() OVER (ORDER BY base.avg_crosswalk_usage_ratio DESC NULLS LAST) as crosswalk_usage_rank,
+    base.avg_age,
+    base.male_ratio,
+    base.phone_usage_ratio,
+    base.dominant_weather,
+    base.weather_variety,
+    base.vehicles_list,
+    base.avg_road_width,
+    base.avg_crossing_time,
+    -- NEW columns
+    base.videos_localized,
+    base.localized_street,
+    base.avg_pedestrians_per_video,
+    base.avg_vehicles_per_video,
+    base.avg_traffic_light_prob,
+    base.avg_crosswalk_prob,
+    base.avg_sidewalk_prob,
+    base.avg_accident_prob,
+    base.avg_crack_prob,
+    base.avg_potholes_prob,
+    base.avg_traffic_signs_ratio,
+    RANK() OVER (PARTITION BY base.continent ORDER BY base.avg_crossing_speed DESC NULLS LAST) as continent_speed_rank,
+    (SELECT COUNT(*) FROM cities c2 WHERE c2.continent = base.continent) as cities_in_continent
+FROM base;
 
 -- Create index on materialized view
 CREATE INDEX IF NOT EXISTS idx_mv_city_insights_city ON mv_city_insights(city_id);
@@ -1006,8 +1164,43 @@ RETURNS TABLE (
     data_as_of_date DATE
 ) AS $$
 BEGIN
+    -- Aggregate videos and pedestrians (as-of target_date) in separate CTEs so per-video
+    -- averages are not pedestrian-count weighted (see migrate-fix-aggregation-fanout.sql).
     RETURN QUERY
-    SELECT 
+    WITH vid AS (
+        SELECT
+            v.city_id,
+            COUNT(*)                        AS total_videos,
+            AVG(v.duration_seconds)         AS avg_video_duration,
+            AVG(v.total_pedestrians)        AS avg_pedestrians_per_video,
+            AVG(v.risky_crossing_ratio)     AS avg_risky_crossing_ratio,
+            AVG(v.run_red_light_ratio)      AS avg_run_red_light_ratio,
+            AVG(v.crosswalk_usage_ratio)    AS avg_crosswalk_usage_ratio,
+            AVG(v.crossing_speed)           AS avg_crossing_speed,
+            AVG(v.crossing_time)            AS avg_crossing_time,
+            AVG(v.phone_usage_ratio)        AS avg_phone_usage_ratio,
+            AVG(v.avg_road_width)           AS avg_road_width
+        FROM videos v
+        WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
+          AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
+        GROUP BY v.city_id
+    ),
+    ped AS (
+        SELECT
+            v.city_id,
+            COUNT(p.id) AS total_pedestrians,
+            AVG(p.age)  AS avg_pedestrian_age,
+            COUNT(*) FILTER (WHERE p.risky_crossing)::FLOAT       / NULLIF(COUNT(p.id), 0) AS risky_crossing_rate,
+            COUNT(*) FILTER (WHERE p.run_red_light)::FLOAT        / NULLIF(COUNT(p.id), 0) AS run_red_light_rate,
+            COUNT(*) FILTER (WHERE p.crosswalk_use_or_not)::FLOAT / NULLIF(COUNT(p.id), 0) AS crosswalk_usage_rate,
+            COUNT(*) FILTER (WHERE p.phone_using)::FLOAT          / NULLIF(COUNT(p.id), 0) AS phone_usage_rate
+        FROM pedestrians p
+        JOIN videos v ON v.id = p.video_id
+        WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
+          AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
+        GROUP BY v.city_id
+    )
+    SELECT
         c.id,
         c.city,
         c.country,
@@ -1019,116 +1212,30 @@ BEGIN
         c.literacy_rate,
         c.gini,
         c.insights,
-        COUNT(DISTINCT v.id) FILTER (
-            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
-              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
-        ) as total_videos,
-        COUNT(DISTINCT p.id) FILTER (
-            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
-              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
-        ) as total_pedestrians,
-        AVG(v.duration_seconds) FILTER (
-            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
-              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
-        ) as avg_video_duration,
-        AVG(v.total_pedestrians) FILTER (
-            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
-              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
-        ) as avg_pedestrians_per_video,
-        AVG(v.risky_crossing_ratio) FILTER (
-            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
-              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
-        ) as avg_risky_crossing_ratio,
-        AVG(v.run_red_light_ratio) FILTER (
-            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
-              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
-        ) as avg_run_red_light_ratio,
-        AVG(v.crosswalk_usage_ratio) FILTER (
-            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
-              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
-        ) as avg_crosswalk_usage_ratio,
-        AVG(p.age) FILTER (
-            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
-              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
-        ) as avg_pedestrian_age,
-        AVG(v.crossing_speed) FILTER (
-            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
-              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
-        )::DECIMAL as avg_crossing_speed,
-        AVG(v.crossing_time) FILTER (
-            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
-              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
-        )::DECIMAL as avg_crossing_time,
-        AVG(v.phone_usage_ratio) FILTER (
-            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
-              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
-        ) as avg_phone_usage_ratio,
-        AVG(v.avg_road_width) FILTER (
-            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
-              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
-        ) as avg_road_width,
-        COUNT(CASE WHEN p.risky_crossing THEN 1 END) FILTER (
-            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
-              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
-        )::FLOAT / NULLIF(
-            COUNT(p.id) FILTER (
-                WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
-                  AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
-            ), 0
-        ) as risky_crossing_rate,
-        COUNT(CASE WHEN p.run_red_light THEN 1 END) FILTER (
-            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
-              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
-        )::FLOAT / NULLIF(
-            COUNT(p.id) FILTER (
-                WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
-                  AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
-            ), 0
-        ) as run_red_light_rate,
-        COUNT(CASE WHEN p.crosswalk_use_or_not THEN 1 END) FILTER (
-            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
-              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
-        )::FLOAT / NULLIF(
-            COUNT(p.id) FILTER (
-                WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
-                  AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
-            ), 0
-        ) as crosswalk_usage_rate,
-        COUNT(CASE WHEN p.phone_using THEN 1 END) FILTER (
-            WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
-              AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
-        )::FLOAT / NULLIF(
-            COUNT(p.id) FILTER (
-                WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
-                  AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
-            ), 0
-        ) as phone_usage_rate,
+        COALESCE(vid.total_videos, 0),
+        COALESCE(ped.total_pedestrians, 0),
+        vid.avg_video_duration,
+        vid.avg_pedestrians_per_video,
+        vid.avg_risky_crossing_ratio,
+        vid.avg_run_red_light_ratio,
+        vid.avg_crosswalk_usage_ratio,
+        ped.avg_pedestrian_age,
+        vid.avg_crossing_speed,
+        vid.avg_crossing_time,
+        vid.avg_phone_usage_ratio,
+        vid.avg_road_width,
+        ped.risky_crossing_rate::DECIMAL,
+        ped.run_red_light_rate::DECIMAL,
+        ped.crosswalk_usage_rate::DECIMAL,
+        ped.phone_usage_rate::DECIMAL,
         COALESCE(
-            (AVG(v.risky_crossing_ratio) FILTER (
-                WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
-                  AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
-            ) + AVG(v.run_red_light_ratio) FILTER (
-                WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
-                  AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
-            )) / 2,
-            COUNT(CASE WHEN p.risky_crossing THEN 1 END) FILTER (
-                WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
-                  AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
-            )::FLOAT / NULLIF(
-                COUNT(p.id) FILTER (
-                    WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
-                      AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
-                ), 0
-            )
-        ) as risk_intensity,
-        target_date as data_as_of_date
+            (vid.avg_risky_crossing_ratio + vid.avg_run_red_light_ratio) / 2,
+            ped.risky_crossing_rate::DECIMAL
+        ),
+        target_date
     FROM cities c
-    LEFT JOIN videos v ON c.id = v.city_id
-        AND (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
-        AND (v.first_imported_at IS NULL OR v.first_imported_at <= target_date::TIMESTAMP)
-    LEFT JOIN pedestrians p ON v.id = p.video_id
-    GROUP BY c.id, c.city, c.country, c.continent, c.latitude, c.longitude, 
-             c.population_city, c.traffic_mortality, c.literacy_rate, c.gini, c.insights;
+    LEFT JOIN vid ON vid.city_id = c.id
+    LEFT JOIN ped ON ped.city_id = c.id;
 END;
 $$ LANGUAGE plpgsql;
 

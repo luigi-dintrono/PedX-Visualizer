@@ -14,7 +14,11 @@
  */
 
 const { Pool } = require('pg');
-require('dotenv').config();
+// Try .env.local first (Next.js convention), then fall back to .env
+require('dotenv').config({ path: '.env.local' });
+if (!process.env.DATABASE_URL) {
+  require('dotenv').config();
+}
 
 // Configuration
 const VERBOSE = process.argv.includes('--verbose');
@@ -354,6 +358,177 @@ const INSIGHT_TEMPLATES = [
         }
     },
     
+    {
+        id: 'localization_coverage',
+        category: 'localization',
+        name: 'Video Geolocation Coverage',
+        evaluate: (cityData) => {
+            const localized = parseInt(cityData.videos_localized || 0);
+            const total = parseInt(cityData.video_count || 0);
+            if (total < 1 || localized < 1) return null;
+
+            // localized_street is a "; "/"," joined list from one video; show the first road.
+            const firstStreet = cityData.localized_street
+                ? cityData.localized_street.split(/[;,]/)[0].trim()
+                : null;
+            const where = firstStreet ? ` (e.g. ${firstStreet})` : '';
+
+            return {
+                text: `${localized} of ${total} ${cityData.city} video${total !== 1 ? 's' : ''} ${localized === 1 ? 'was' : 'were'} placed on the map from the footage alone — no GPS${where}`,
+                relevance_score: 0.85,
+                metrics: { city_value: localized, comparison_value: total, delta_percent: 0 }
+            };
+        }
+    },
+
+    {
+        id: 'infrastructure',
+        category: 'infrastructure',
+        name: 'Street Infrastructure',
+        evaluate: (cityData) => {
+            if (cityData.video_count < 1) return null;
+            const tl = cityData.avg_traffic_light_prob != null ? parseFloat(cityData.avg_traffic_light_prob) * 100 : null;
+            const cw = cityData.avg_crosswalk_prob != null ? parseFloat(cityData.avg_crosswalk_prob) * 100 : null;
+            const rw = cityData.avg_road_width != null ? parseFloat(cityData.avg_road_width) : null;
+
+            const parts = [];
+            if (cw != null) parts.push(`crosswalks in ${cw.toFixed(0)}% of footage`);
+            if (tl != null) parts.push(`traffic lights in ${tl.toFixed(0)}%`);
+            if (rw != null && rw > 0) parts.push(`~${rw.toFixed(0)} m average road width`);
+            if (parts.length === 0) return null;
+
+            return {
+                text: `${cityData.city} street scenes: ${parts.join(', ')}`,
+                relevance_score: 0.5,
+                metrics: { city_value: rw || 0, comparison_value: 0, delta_percent: 0 }
+            };
+        }
+    },
+
+    {
+        id: 'road_hazards',
+        category: 'safety',
+        name: 'Road Condition Hazards',
+        evaluate: (cityData) => {
+            if (cityData.video_count < 1) return null;
+            const crack = parseFloat(cityData.avg_crack_prob || 0) * 100;
+            const pot = parseFloat(cityData.avg_potholes_prob || 0) * 100;
+            const acc = parseFloat(cityData.avg_accident_prob || 0) * 100;
+            const worst = Math.max(crack, pot, acc);
+            if (worst < 2) return null; // only when something notable was detected
+
+            const parts = [];
+            if (crack >= 2) parts.push(`road cracks in ${crack.toFixed(0)}% of frames`);
+            if (pot >= 2) parts.push(`potholes in ${pot.toFixed(0)}%`);
+            if (acc >= 1) parts.push(`accident scenes in ${acc.toFixed(0)}%`);
+            if (parts.length === 0) return null;
+
+            return {
+                text: `Road-condition hazards in ${cityData.city}: ${parts.join(', ')}`,
+                relevance_score: Math.min(worst / 20, 0.75),
+                metrics: { city_value: worst, comparison_value: 0, delta_percent: 0 }
+            };
+        }
+    },
+
+    {
+        id: 'pedestrian_density',
+        category: 'behavior',
+        name: 'Pedestrian Density',
+        evaluate: (cityData, globalData) => {
+            const cityD = parseFloat(cityData.avg_pedestrians_per_video || 0);
+            const globalD = parseFloat(globalData.global_avg_pedestrians_per_video || 0);
+            if (cityData.video_count < 1 || cityD < 1 || !globalD) return null;
+            const delta = ((cityD - globalD) / globalD) * 100;
+            if (Math.abs(delta) < 25) return null;
+            const comparison = delta > 0 ? 'busier' : 'quieter';
+            return {
+                text: `${cityData.city} crossings are ${comparison} than average — about ${cityD.toFixed(0)} pedestrians per video vs ${globalD.toFixed(0)} globally`,
+                relevance_score: Math.min(Math.abs(delta) / 150, 0.7),
+                metrics: { city_value: cityD, comparison_value: globalD, delta_percent: delta }
+            };
+        }
+    },
+
+    {
+        id: 'traffic_volume',
+        category: 'vehicle',
+        name: 'Traffic Volume',
+        evaluate: (cityData, globalData) => {
+            const v = parseFloat(cityData.avg_vehicles_per_video || 0);
+            const g = parseFloat(globalData.global_avg_vehicles_per_video || 0);
+            if (cityData.video_count < 1 || v < 1 || !g) return null;
+            const delta = ((v - g) / g) * 100;
+            if (Math.abs(delta) < 30) return null;
+            const comparison = delta > 0 ? 'heavier' : 'lighter';
+            return {
+                text: `${cityData.city} sees ${comparison} traffic — about ${v.toFixed(0)} vehicles per video vs ${g.toFixed(0)} globally`,
+                relevance_score: Math.min(Math.abs(delta) / 200, 0.6),
+                metrics: { city_value: v, comparison_value: g, delta_percent: delta }
+            };
+        }
+    },
+
+    {
+        id: 'decision_time',
+        category: 'behavior',
+        name: 'Crossing Decision Time',
+        evaluate: (cityData) => {
+            if (cityData.video_count < 1 || cityData.avg_crossing_time == null) return null;
+            const t = parseFloat(cityData.avg_crossing_time);
+            if (!(t > 0)) return null;
+            return {
+                text: `Pedestrians in ${cityData.city} take about ${t.toFixed(1)} s to decide and start crossing`,
+                relevance_score: 0.45,
+                metrics: { city_value: t, comparison_value: 0, delta_percent: 0 }
+            };
+        }
+    },
+
+    {
+        id: 'speed_outlier',
+        category: 'rank',
+        name: 'Crossing Speed Outlier',
+        evaluate: (cityData, globalData) => {
+            if (!cityData.avg_crossing_speed || !globalData.global_q1_crossing_speed
+                || !globalData.global_q3_crossing_speed || cityData.video_count < 1) return null;
+            const s = parseFloat(cityData.avg_crossing_speed);
+            const q1 = parseFloat(globalData.global_q1_crossing_speed);
+            const q3 = parseFloat(globalData.global_q3_crossing_speed);
+            const iqr = q3 - q1;
+            if (!(iqr > 0)) return null;
+            let kind = null;
+            if (s > q3 + 1.5 * iqr) kind = 'unusually fast';
+            else if (s < q1 - 1.5 * iqr) kind = 'unusually slow';
+            if (!kind) return null;
+            return {
+                text: `${cityData.city}'s ${s.toFixed(2)} m/s crossing speed is ${kind} — a statistical outlier versus other sampled cities`,
+                relevance_score: 0.75,
+                metrics: { city_value: s, comparison_value: q3, delta_percent: 0 }
+            };
+        }
+    },
+
+    {
+        id: 'age_vs_resident',
+        category: 'demographic',
+        name: 'Observed vs Resident Age',
+        evaluate: (cityData) => {
+            if (!cityData.avg_age || !cityData.city_med_age || cityData.pedestrian_count < 10) return null;
+            const obs = parseFloat(cityData.avg_age);
+            const res = parseFloat(cityData.city_med_age);
+            if (!(res > 0)) return null;
+            const delta = obs - res;
+            if (Math.abs(delta) < 5) return null;
+            const comparison = delta > 0 ? 'older' : 'younger';
+            return {
+                text: `Pedestrians observed crossing in ${cityData.city} skew about ${Math.abs(delta).toFixed(0)} years ${comparison} than the city's median resident age`,
+                relevance_score: Math.min(Math.abs(delta) / 20, 0.6),
+                metrics: { city_value: obs, comparison_value: res, delta_percent: 0 }
+            };
+        }
+    },
+
     {
         id: 'data_confidence',
         category: 'meta',

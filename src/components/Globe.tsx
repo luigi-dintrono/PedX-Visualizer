@@ -248,6 +248,35 @@ function createVideoDotCanvas(): HTMLCanvasElement {
   return canvas;
 }
 
+// Helper for a localization CANDIDATE dot (smaller, amber circle) — the alternatives the
+// monocular-OSM localization considered before settling on the chosen (rank-1) point.
+function createCandidateDotCanvas(): HTMLCanvasElement {
+  const size = 12;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return canvas;
+  ctx.fillStyle = '#f59e0b'; // amber
+  ctx.beginPath();
+  ctx.arc(size / 2, size / 2, size / 2 - 1, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  return canvas;
+}
+
+// One ranked candidate location the monocular-OSM localization considered.
+interface LocalizationCandidate {
+  rank: number;
+  latitude: number;
+  longitude: number;
+  street_names: string[];
+  support: number;
+  google_maps_url: string;
+}
+
 interface VideoData {
   id: number;
   video_name: string;
@@ -260,6 +289,9 @@ interface VideoData {
   localization_confidence: string | null;
   street_name: string | null;
   localization_status: string | null;
+  // Richer localization: uncertainty radius (m) + ranked candidate locations
+  localization_spread_m: number | null;
+  localization_candidates: LocalizationCandidate[] | null;
   risky_crossing_ratio: number | null;
 }
 
@@ -753,6 +785,16 @@ export default function Globe() {
             return;
           }
         }
+
+        // Localization candidate marker → open its Google Maps location
+        const isCandidate = pickedObject.id.properties.isCandidate?.getValue();
+        if (isCandidate) {
+          const mapsUrl = pickedObject.id.properties.mapsUrl?.getValue();
+          if (mapsUrl) {
+            window.open(mapsUrl, '_blank', 'noopener,noreferrer');
+            return;
+          }
+        }
         
         // Otherwise, handle as city selection
         const cityName = pickedObject.id.properties.city?.getValue();
@@ -852,6 +894,14 @@ export default function Globe() {
             // Real localization provenance, when present (PedX-Insight --mode localize)
             video.street_name ? `📍 ${video.street_name}` : null,
             video.localization_confidence ? `Localization: ${video.localization_confidence} confidence` : null,
+            video.localization_spread_m != null
+              ? `Uncertainty: ±${video.localization_spread_m >= 1000
+                  ? (video.localization_spread_m / 1000).toFixed(1) + ' km'
+                  : Math.round(video.localization_spread_m) + ' m'}`
+              : null,
+            video.localization_candidates && video.localization_candidates.length > 1
+              ? `${video.localization_candidates.length} candidate locations (amber dots)`
+              : null,
             video.risky_crossing_ratio != null
               ? `Risky crossing: ${(video.risky_crossing_ratio * 100).toFixed(0)}%`
               : null,
@@ -876,6 +926,84 @@ export default function Globe() {
           isVideo: true,
         }
       });
+
+      // --- Monocular localization detail: uncertainty circle + candidate points + connector ---
+      // Only for videos with a REAL localized point (status 'ok'), not the city-centre fallback.
+      const isLocalized = video.latitude != null && video.longitude != null && video.localization_status === 'ok';
+      if (isLocalized) {
+        // Uncertainty disk (radius = confidence spread in metres), clamped to ground.
+        if (video.localization_spread_m && video.localization_spread_m > 0) {
+          const r = Math.min(video.localization_spread_m, 50000); // clamp huge low-confidence spreads
+          videoDataSource.entities.add({
+            position: Cesium.Cartesian3.fromDegrees(lngNum, latNum),
+            ellipse: {
+              semiMinorAxis: r,
+              semiMajorAxis: r,
+              material: Cesium.Color.fromCssColorString('#3b82f6').withAlpha(0.10),
+              heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+            },
+          });
+        }
+
+        // Dashed connector from the city centre to the chosen point (how far localization moved).
+        if (video.city_latitude != null && video.city_longitude != null) {
+          videoDataSource.entities.add({
+            polyline: {
+              positions: Cesium.Cartesian3.fromDegreesArray([
+                Number(video.city_longitude), Number(video.city_latitude),
+                lngNum, latNum,
+              ]),
+              width: 1.5,
+              material: new Cesium.PolylineDashMaterialProperty({
+                color: Cesium.Color.fromCssColorString('#3b82f6').withAlpha(0.5),
+              }),
+              clampToGround: true,
+            },
+          });
+        }
+
+        // Candidate alternatives (rank >= 2); rank 1 is the chosen point (already a marker).
+        const candidates = Array.isArray(video.localization_candidates) ? video.localization_candidates : [];
+        candidates
+          .filter((cand) => cand && cand.rank !== 1 && Number.isFinite(cand.latitude) && Number.isFinite(cand.longitude))
+          .forEach((cand) => {
+            const streets = Array.isArray(cand.street_names) ? cand.street_names.slice(0, 3).join(', ') : '';
+            videoDataSource.entities.add({
+              position: Cesium.Cartesian3.fromDegrees(cand.longitude, cand.latitude, 30),
+              billboard: {
+                image: createCandidateDotCanvas(),
+                scale: 1.0,
+                heightReference: new Cesium.ConstantProperty(Cesium.HeightReference.RELATIVE_TO_GROUND),
+                disableDepthTestDistance: 1000000,
+                verticalOrigin: Cesium.VerticalOrigin.CENTER,
+                horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
+              },
+              label: {
+                text: [
+                  `Candidate #${cand.rank}${video.video_name ? ' · ' + video.video_name : ''}`,
+                  streets ? `📍 ${streets}` : null,
+                  cand.support != null ? `Support: ${cand.support}` : null,
+                  'Click to open in Google Maps',
+                ].filter(Boolean).join('\n'),
+                font: '11pt sans-serif',
+                fillColor: Cesium.Color.WHITE,
+                outlineColor: Cesium.Color.BLACK,
+                outlineWidth: 2,
+                style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+                pixelOffset: new Cesium.Cartesian2(0, -28),
+                show: false,
+                disableDepthTestDistance: 1000000,
+                backgroundColor: Cesium.Color.BLACK.withAlpha(0.7),
+                showBackground: true,
+                backgroundPadding: new Cesium.Cartesian2(8, 4),
+              },
+              properties: {
+                isCandidate: true,
+                mapsUrl: cand.google_maps_url || `https://www.google.com/maps?q=${cand.latitude},${cand.longitude}`,
+              },
+            });
+          });
+      }
     });
 
     // Add data source to viewer
@@ -1242,39 +1370,33 @@ export default function Globe() {
       return;
     }
 
-    // Debounce updates to prevent flickering when filters change rapidly
+    // Debounce updates to prevent flickering when filters change rapidly.
+    // `cancelled` gives last-write-wins semantics: if the filters/metric change again while a
+    // fetch is in flight, this run is marked cancelled in cleanup and will not repaint the
+    // globe, so a slow response can't overwrite the view for the newer filter set.
+    let cancelled = false;
     const timeoutId = setTimeout(async () => {
       try {
-        console.log('[Globe] Updating heatmap - useEffect triggered', {
-          selectedMetrics,
-          vehicleFilters: {
-            car: granularFilters.car,
-            bus: granularFilters.bus,
-            truck: granularFilters.truck,
-            motorbike: granularFilters.motorbike,
-            bicycle: granularFilters.bicycle
-          },
-          vehicleFiltersKey,
-          timestamp: new Date().toISOString()
-        });
         const data = await fetchGlobalData();
-        console.log('[Globe] Fetched data count:', data.length);
+        if (cancelled) return;
         if (data.length === 0) {
           console.warn('[Globe] No data returned from API - check filters');
         }
         const Cesium = await loadCesium();
-        
+        if (cancelled) return;
+
         // Use the first selected metric for heatmap
         const metricType = selectedMetrics[0];
-        console.log('[Globe] Creating heatmap with', data.length, 'cities for metric:', metricType);
         await createHeatmap(data, metricType, Cesium, setSelectedCity);
-        console.log('[Globe] Heatmap created successfully');
       } catch (error) {
         console.error('[Globe] Error updating heatmap:', error);
       }
     }, 300); // 300ms debounce
 
-    return () => clearTimeout(timeoutId);
+    return () => {
+      cancelled = true;
+      clearTimeout(timeoutId);
+    };
   }, [
     selectedMetrics, 
     vehicleFiltersKey,
@@ -1295,18 +1417,25 @@ export default function Globe() {
       return;
     }
 
+    let cancelled = false;
     const handleCityZoomAndVideos = async () => {
       const Cesium = await loadCesium();
-      
+      if (cancelled) return;
+
       // Zoom to city
       await zoomToCity(selectedCity, Cesium);
-      
-      // Fetch and display video markers
+      if (cancelled) return;
+
+      // Fetch and display video markers (guard against a stale city selection painting late)
       const videos = await fetchCityVideos(selectedCity);
+      if (cancelled) return;
       await createVideoMarkers(videos, Cesium);
     };
 
     handleCityZoomAndVideos();
+    return () => {
+      cancelled = true;
+    };
   }, [selectedCity, zoomToCity, fetchCityVideos, createVideoMarkers]);
 
   // Listen for globe reset event

@@ -123,31 +123,50 @@ export async function GET(
 
     const globalBaseline = globalResult.rows[0];
 
-    // Map metric to global baseline column
+    // Rate metrics are stored as 0-1 ratios but displayed with a '%' unit, so scale them by
+    // 100 (city value AND global baseline) — otherwise the UI renders "0.15 %" instead of
+    // "15.0 %". deltaVsGlobal is a ratio and is unaffected by scaling both sides equally.
+    const isRateMetric = ['risky_crossing', 'run_red_light', 'crosswalk_usage', 'phone_usage'].includes(metric);
+    const scale = isRateMetric ? 100 : 1;
+
+    // Map each metric to the matching GLOBAL baseline column. Rate metrics use the global
+    // mean-of-ratios (global_avg_*_ratio) to match the per-city estimator
+    // (mv_city_insights.avg_*_ratio); phone_usage uses the pooled rate to match its pooled
+    // per-city column. crossing_time has no column in mv_global_insights and is fetched below.
     const globalColumnMap: Record<string, string | null> = {
-      risky_crossing: 'global_risky_crossing_rate',
-      run_red_light: 'global_run_red_light_rate',
-      crosswalk_usage: 'global_crosswalk_usage_rate',
+      risky_crossing: 'global_avg_risky_crossing_ratio',
+      run_red_light: 'global_avg_run_red_light_ratio',
+      crosswalk_usage: 'global_avg_crosswalk_usage_ratio',
       phone_usage: 'global_phone_usage_rate',
       crossing_speed: 'global_avg_crossing_speed',
-      crossing_time: 'global_avg_crossing_speed', // proxy
+      crossing_time: null, // fetched separately (mv_global_insights has no crossing_time)
       avg_age: 'global_avg_pedestrian_age',
       pedestrian_density: null,
       road_width: null,
     };
 
-    const globalValue = globalColumnMap[metric] 
-      ? parseFloat(globalBaseline[globalColumnMap[metric]]) 
+    let globalRaw: number | null = globalColumnMap[metric]
+      ? parseFloat(globalBaseline[globalColumnMap[metric] as string])
       : null;
+
+    // Real global crossing-time baseline (seconds) — not the old crossing_speed (m/s) proxy,
+    // which compared inversely-related quantities in different units.
+    if (metric === 'crossing_time') {
+      const ctResult = await pool.query(
+        `SELECT AVG(crossing_time) AS value FROM videos WHERE crossing_time IS NOT NULL`
+      );
+      const raw = ctResult.rows[0]?.value;
+      globalRaw = raw == null ? null : Number(raw);
+    }
+
+    const globalValue =
+      globalRaw === null || Number.isNaN(globalRaw) ? null : globalRaw * scale;
 
     // Fetch top cities
     // Exclude cities with 0.00% for rate metrics (risky_crossing, run_red_light, crosswalk_usage, phone_usage)
     const rankColumn = config.rank_column ? `, ${config.rank_column}` : '';
     const orderDirection = config.higher_is_better ? 'DESC' : 'ASC';
-    
-    // Determine if this is a rate metric (percentage-based)
-    const isRateMetric = ['risky_crossing', 'run_red_light', 'crosswalk_usage', 'phone_usage'].includes(metric);
-    
+
     // Build WHERE clause to exclude 0.00% values for rate metrics
     let whereClause = `${config.column_name} IS NOT NULL`;
     if (isRateMetric) {
@@ -172,9 +191,9 @@ export async function GET(
 
     // Calculate delta vs global for each city
     const cities = citiesResult.rows.map((row, index) => {
-      const cityValue = parseFloat(row.value);
-      const deltaPercent = globalValue 
-        ? ((cityValue - globalValue) / globalValue) * 100 
+      const cityValue = parseFloat(row.value) * scale;
+      const deltaPercent = globalValue
+        ? ((cityValue - globalValue) / globalValue) * 100
         : null;
       
       return {

@@ -29,15 +29,27 @@ const pool = new Pool({
 });
 
 (async () => {
+  // Run the whole file inside one transaction on a single client so a failure
+  // half-way through a multi-statement migration rolls back cleanly instead of
+  // leaving the schema partly applied. (Postgres DDL is transactional.)
+  const client = await pool.connect();
   try {
     const sql = fs.readFileSync(file, 'utf8');
-    console.log(`🔄 Executing ${file} (${sql.length} bytes)...`);
-    await pool.query(sql);
-    console.log('✅ SQL executed successfully');
+    console.log(`🔄 Executing ${file} (${sql.length} bytes) in a transaction...`);
+    await client.query('BEGIN');
+    await client.query(sql);
+    await client.query('COMMIT');
+    console.log('✅ SQL executed successfully (committed)');
   } catch (error) {
-    console.error('❌ SQL execution failed:', error.message);
+    try { await client.query('ROLLBACK'); } catch { /* ignore */ }
+    // Surface the fields Postgres provides for SQL errors, not just the message.
+    console.error('❌ SQL execution failed (rolled back):', error.message);
+    for (const f of ['detail', 'hint', 'where', 'position']) {
+      if (error[f]) console.error(`   ${f}: ${error[f]}`);
+    }
     process.exitCode = 1;
   } finally {
+    client.release();
     await pool.end();
   }
 })();

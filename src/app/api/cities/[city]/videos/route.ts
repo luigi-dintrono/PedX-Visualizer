@@ -22,6 +22,8 @@ export async function GET(
         v.localization_confidence,
         v.street_name,
         v.localization_status,
+        v.localization_spread_m,
+        v.localization_candidates,
         v.risky_crossing_ratio,
         v.run_red_light_ratio,
         v.crosswalk_usage_ratio,
@@ -47,6 +49,9 @@ export async function GET(
       ...row,
       latitude: row.latitude != null ? parseFloat(row.latitude) : null,
       longitude: row.longitude != null ? parseFloat(row.longitude) : null,
+      // Localization uncertainty radius (m) and ranked candidate locations (JSONB → already parsed)
+      localization_spread_m: row.localization_spread_m != null ? parseFloat(row.localization_spread_m) : null,
+      localization_candidates: row.localization_candidates ?? null,
       city_latitude: row.city_latitude != null ? parseFloat(row.city_latitude) : null,
       city_longitude: row.city_longitude != null ? parseFloat(row.city_longitude) : null,
       risky_crossing_ratio: row.risky_crossing_ratio != null ? parseFloat(row.risky_crossing_ratio) : null,

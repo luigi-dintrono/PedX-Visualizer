@@ -15,7 +15,16 @@
     "aggregate-csv-fresh": "node scripts/aggregate-csv-data.js --fresh",
     "aggregate-csv-verbose": "node scripts/aggregate-csv-data.js --verbose",
     "import-video-coordinates": "node scripts/import-video-coordinates.js",
-    "import-video-coordinates-dry": "node scripts/import-video-coordinates.js --dry-run"
+    "import-video-coordinates-dry": "node scripts/import-video-coordinates.js --dry-run",
+    "refresh-views": "node scripts/refresh-views.js",
+    "generate-insights": "node scripts/generate-city-insights.js",
+    "run-sql": "node scripts/run-sql.js",
+    "db:migrate-localization": "node scripts/run-sql.js scripts/migrate-add-localization-fields.sql",
+    "db:migrate-localization-candidates": "node scripts/run-sql.js scripts/migrate-add-localization-candidates.sql",
+    "gazetteer:generate": "node scripts/generate-city-gazetteer.js",
+    "gazetteer:test": "node scripts/test-city-gazetteer.js",
+    "db:migrate-insights-ext": "node scripts/run-sql.js scripts/migrate-extend-insights.sql",
+    "db:publish": "node scripts/aggregate-csv-data.js && node scripts/import-video-coordinates.js && node scripts/refresh-views.js && node scripts/generate-city-insights.js"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.16",
@@ -31,6 +40,7 @@
     "@radix-ui/react-switch": "^1.3.3",
     "@radix-ui/react-tooltip": "^1.2.12",
     "@tanstack/react-table": "^8.21.3",
+    "all-the-cities": "^3.1.0",
     "autoprefixer": "^10.5.2",
     "cesium": "1.143.0",
     "class-variance-authority": "^0.7.1",

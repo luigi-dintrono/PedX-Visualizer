@@ -169,24 +169,18 @@ export async function GET(
     try {
       // Get daytime breakdown from pedestrians table
       // Note: daytime might be stored as 0/1 (0=night, 1=day) or true/false
+      // daytime is a BOOLEAN column, so compare it as one. The previous
+      // `p.daytime = 1 / = '1'` comparisons threw "operator does not exist: boolean = integer",
+      // which was swallowed by the catch and left the Day/Night breakdown permanently empty.
       daytimeResult = await pool.query(`
-        SELECT 
-          CASE 
-            WHEN p.daytime = true OR p.daytime = 1 OR p.daytime = '1' THEN 'Day'
-            WHEN p.daytime = false OR p.daytime = 0 OR p.daytime = '0' THEN 'Night'
-            ELSE 'Unknown'
-          END as daytime,
+        SELECT
+          CASE WHEN p.daytime THEN 'Day' ELSE 'Night' END as daytime,
           COUNT(*) as count,
           COUNT(*)::FLOAT / NULLIF(SUM(COUNT(*)) OVER (), 0) * 100 as percentage
         FROM pedestrians p
         JOIN videos v ON p.video_id = v.id
         WHERE v.city_id = $1 AND p.daytime IS NOT NULL
-        GROUP BY 
-          CASE 
-            WHEN p.daytime = true OR p.daytime = 1 OR p.daytime = '1' THEN 'Day'
-            WHEN p.daytime = false OR p.daytime = 0 OR p.daytime = '0' THEN 'Night'
-            ELSE 'Unknown'
-          END
+        GROUP BY CASE WHEN p.daytime THEN 'Day' ELSE 'Night' END
         ORDER BY count DESC
       `, [cityId]);
     } catch (err) {

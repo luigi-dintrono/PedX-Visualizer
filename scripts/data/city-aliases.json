@@ -1,0 +1,21 @@
+{
+  "_comment": "Alternate / historical big-city names -> canonical name. Resolved against the project gazetteer first, then the world layer (all-the-cities), so a target need not be a studied city. Hand-maintained; add freely.",
+  "NYC": "New York",
+  "New York City": "New York",
+  "Bangalore": "Bengaluru",
+  "Bombay": "Mumbai",
+  "Calcutta": "Kolkata",
+  "Madras": "Chennai",
+  "Cawnpore": "Kanpur",
+  "Poona": "Pune",
+  "Peking": "Beijing",
+  "Canton": "Guangzhou",
+  "Saigon": "Ho Chi Minh City",
+  "Rangoon": "Yangon",
+  "Dacca": "Dhaka",
+  "Constantinople": "Istanbul",
+  "Bangkok Metropolis": "Bangkok",
+  "Kiev": "Kyiv",
+  "Gothenburg": "Goteborg",
+  "Nuremberg": "Nurnberg"
+}

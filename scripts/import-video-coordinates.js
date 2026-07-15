@@ -106,19 +106,34 @@ async function importVideoCoordinates() {
         }
         const confidence = (row.confidence_level || '').trim() || null;
         const street = (row.street_names || '').trim() || null;
+        const spread = parseFloat(row.confidence_spread_m);
+        const spreadM = Number.isFinite(spread) && spread >= 0 ? spread : null;
+        // candidates is a JSON array string; store as JSONB (null if absent/unparseable).
+        let candidates = null;
+        const rawCandidates = (row.candidates || '').trim();
+        if (rawCandidates) {
+          try {
+            const parsed = JSON.parse(rawCandidates);
+            if (Array.isArray(parsed) && parsed.length) candidates = JSON.stringify(parsed);
+          } catch {
+            console.log(`   ⚠️  ${link}: candidates JSON unparseable — stored as null`);
+          }
+        }
 
         if (dryRun) {
-          console.log(`   [dry-run] ${link}: latitude=${lat}, longitude=${lon}, confidence=${confidence}, street=${street}`);
+          console.log(`   [dry-run] ${link}: latitude=${lat}, longitude=${lon}, confidence=${confidence}, spread_m=${spreadM}, candidates=${candidates ? JSON.parse(candidates).length : 0}, street=${street}`);
           updatedOk++;
           continue;
         }
         const result = await pool.query(
           `UPDATE videos
            SET latitude = $1, longitude = $2, localization_confidence = $3,
-               street_name = $4, localization_status = $5, last_updated_at = CURRENT_TIMESTAMP
-           WHERE link = $6
+               street_name = $4, localization_status = $5,
+               localization_spread_m = $6, localization_candidates = $7::jsonb,
+               last_updated_at = CURRENT_TIMESTAMP
+           WHERE link = $8
            RETURNING id, video_name`,
-          [lat, lon, confidence, street ? street.slice(0, 255) : null, status, link]
+          [lat, lon, confidence, street ? street.slice(0, 255) : null, status, spreadM, candidates, link]
         );
         if (result.rows.length > 0) {
           updatedOk++;

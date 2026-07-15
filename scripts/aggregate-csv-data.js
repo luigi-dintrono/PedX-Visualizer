@@ -22,6 +22,8 @@ require('dotenv').config(); // Fallback to .env if .env.local doesn't exist
 
 // Import GeoNames API integration
 const GeoNamesAPI = require('./geonames-api');
+// Offline city resolver (no network) — the PRIMARY geo backfill, run before GeoNames.
+const { enrichCityRow } = require('./lib/city-gazetteer');
 
 // Configuration
 const CSV_DIR = path.join(__dirname, '..', 'summary_data');
@@ -287,30 +289,33 @@ class DatabaseAggregator {
         
         // Process video data to extract unique cities
         for (const row of videoData) {
-            // Handle missing country data - allow cities with missing data to be added for GeoNames processing
-            if (!row.country || row.country.trim() === '') {
-                // Handle special cases where we know the location
-                if (row.city === 'Brooklyn') {
-                    row.country = 'United States';
-                    row.state = 'New York';
-                    row.iso3 = 'USA';
-                    row.continent = 'North America';
-                    row.lat = '40.6782';
-                    row.lon = '-73.9442';
-                    console.log(`Added missing location data for Brooklyn, NY, USA`);
-                } else {
-                    // Allow cities with missing country data to be added - GeoNames will fill in missing data later
-                    console.log(`Adding city ${row.city} with missing country data - will be filled by GeoNames API`);
-                    // Set placeholder values to avoid null constraint violations
-                    row.country = row.country || 'Unknown';
-                    row.iso3 = row.iso3 || '';
-                    row.continent = row.continent || 'Unknown';
-                    row.state = row.state || '';
-                    row.lat = row.lat || null;
-                    row.lon = row.lon || null;
-                }
+            // Resolve/complete geography OFFLINE before the (city, country) key is built.
+            // enrichCityRow() fills missing country/continent/coordinates from the local
+            // gazetteer (scripts/data/known-cities.json) and canonicalises the city name
+            // (e.g. "NewYork" -> "New York"), so a row with blank or non-canonical geo merges
+            // with the existing city row via ON CONFLICT (city, country) instead of creating an
+            // "Unknown" duplicate. Cities the gazetteer doesn't know keep placeholder values and
+            // are left for the GeoNames API step at the end of aggregate().
+            const enrich = enrichCityRow(row);
+            if (enrich.changed) {
+                const via = enrich.resolution.source === 'all-the-cities' ? 'world' : enrich.matchType;
+                const parts = [];
+                if (enrich.renamed) parts.push(`→ ${row.city}, ${row.country}`);
+                if (enrich.filledFields.length) parts.push(`filled ${enrich.filledFields.join('/')}`);
+                console.log(`🗺️  "${enrich.resolution.input}" resolved offline [${via}]: ${parts.join('; ')}`);
             }
-            
+            if (!row.country || row.country.trim() === '' || row.country.trim() === 'Unknown') {
+                // Not in the offline gazetteer — keep placeholders so the row still imports; the
+                // GeoNames API step will try to fill it (and it can be added to the gazetteer).
+                console.log(`Adding city ${row.city} with missing location data - GeoNames API will try to fill it later`);
+                row.country = 'Unknown';
+                row.iso3 = row.iso3 || '';
+                row.continent = row.continent && row.continent.trim() ? row.continent : 'Unknown';
+                row.state = row.state || '';
+                row.lat = row.lat || null;
+                row.lon = row.lon || null;
+            }
+
             const cityKey = `${row.city}_${row.country}`;
             if (!cityMap.has(cityKey)) {
                 cityMap.set(cityKey, {
@@ -392,6 +397,8 @@ class DatabaseAggregator {
 
         for (const row of videoData) {
             try {
+                // Must match the key built in aggregateCities() AFTER enrichCityRow() mutated
+                // row.city/row.country in place — both run over the same shared videoData rows.
                 const cityKey = `${row.city}_${row.country}`;
                 const cityId = this.cityCache.get(cityKey);
                 
