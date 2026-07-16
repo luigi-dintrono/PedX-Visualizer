@@ -101,6 +101,10 @@ CREATE TABLE videos (
     -- Crossing metrics
     crossing_time DECIMAL(8, 4),
     crossing_speed DECIMAL(8, 4),
+    -- MEASURED per-video median walking speed (m/s) from PedX-Insight [S1] dense tracking.
+    -- Distinct from crossing_speed (an imported city-level constant). NULL when the video
+    -- was analyzed before the dense-tracking pass (see scripts/migrate-add-measured-speed.sql).
+    measured_walking_speed_mps NUMERIC,
     -- Geographic coordinates (optional - if null, use city coordinates)
     latitude DECIMAL(10, 8),
     longitude DECIMAL(11, 8),
@@ -391,7 +395,10 @@ WITH vid AS (
         MAX(data_collected_date)        AS latest_data_date,
         MIN(first_imported_at)          AS earliest_import_date,
         MAX(last_updated_at)            AS latest_update_date,
-        COUNT(DISTINCT import_batch_id) AS import_batch_count
+        COUNT(DISTINCT import_batch_id) AS import_batch_count,
+        -- MEASURED walking speed (AVG ignores NULLs; NULL when no measured videos)
+        AVG(measured_walking_speed_mps) AS avg_measured_walking_speed,
+        COUNT(measured_walking_speed_mps) AS measured_speed_video_count
     FROM videos
     GROUP BY city_id
 ),
@@ -444,7 +451,10 @@ SELECT
     vid.latest_data_date,
     vid.earliest_import_date,
     vid.latest_update_date,
-    vid.import_batch_count
+    vid.import_batch_count,
+    -- MEASURED walking speed (appended; kept last so CREATE OR REPLACE VIEW stays legal)
+    vid.avg_measured_walking_speed,
+    COALESCE(vid.measured_speed_video_count, 0) AS measured_speed_video_count
 FROM cities c
 LEFT JOIN vid ON vid.city_id = c.id
 LEFT JOIN ped ON ped.city_id = c.id;
@@ -718,7 +728,11 @@ SELECT
     vid.global_avg_traffic_light_prob,
     vid.global_avg_crosswalk_prob,
     vid.global_avg_sidewalk_prob,
-    vid.global_avg_accident_prob
+    vid.global_avg_accident_prob,
+    -- NEW: MEASURED walking speed baselines (NULL when no measured videos exist)
+    vid.global_avg_measured_walking_speed,
+    vid.global_median_measured_walking_speed,
+    vid.global_videos_with_measured_speed
 FROM
     (SELECT
         AVG(crossing_speed)        AS global_avg_crossing_speed,
@@ -741,7 +755,11 @@ FROM
         AVG(traffic_light_prob)    AS global_avg_traffic_light_prob,
         AVG(crosswalk_prob)        AS global_avg_crosswalk_prob,
         AVG(sidewalk_prob)         AS global_avg_sidewalk_prob,
-        AVG(accident_prob)         AS global_avg_accident_prob
+        AVG(accident_prob)         AS global_avg_accident_prob,
+        -- NEW: AVG/PERCENTILE_CONT ignore NULLs -> computed only over measured videos
+        AVG(measured_walking_speed_mps) AS global_avg_measured_walking_speed,
+        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY measured_walking_speed_mps) AS global_median_measured_walking_speed,
+        COUNT(measured_walking_speed_mps) AS global_videos_with_measured_speed
      FROM videos) vid
 CROSS JOIN
     (SELECT
@@ -785,7 +803,11 @@ WITH vid AS (
         AVG(accident_prob)         AS avg_accident_prob,
         AVG(crack_prob)            AS avg_crack_prob,
         AVG(potholes_prob)         AS avg_potholes_prob,
-        AVG(traffic_signs_ratio)   AS avg_traffic_signs_ratio
+        AVG(traffic_signs_ratio)   AS avg_traffic_signs_ratio,
+        -- NEW: MEASURED walking speed (NULL for cities without measured videos)
+        AVG(measured_walking_speed_mps) AS avg_measured_walking_speed,
+        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY measured_walking_speed_mps) AS median_measured_walking_speed,
+        COUNT(measured_walking_speed_mps) AS measured_speed_video_count
     FROM videos
     GROUP BY city_id
 ),
@@ -832,10 +854,21 @@ base AS (
         vid.avg_accident_prob,
         vid.avg_crack_prob,
         vid.avg_potholes_prob,
-        vid.avg_traffic_signs_ratio
+        vid.avg_traffic_signs_ratio,
+        vid.avg_measured_walking_speed,
+        vid.median_measured_walking_speed,
+        COALESCE(vid.measured_speed_video_count, 0) AS measured_speed_video_count
     FROM cities c
     LEFT JOIN vid ON vid.city_id = c.id
     LEFT JOIN ped ON ped.city_id = c.id
+),
+-- Rank ONLY cities with measured data; the rest keep a NULL rank (no fake last places).
+measured_ranked AS (
+    SELECT
+        city_id,
+        RANK() OVER (ORDER BY avg_measured_walking_speed DESC) AS measured_walking_speed_rank
+    FROM base
+    WHERE avg_measured_walking_speed IS NOT NULL
 )
 SELECT
     base.city_id,
@@ -875,8 +908,14 @@ SELECT
     base.avg_potholes_prob,
     base.avg_traffic_signs_ratio,
     RANK() OVER (PARTITION BY base.continent ORDER BY base.avg_crossing_speed DESC NULLS LAST) as continent_speed_rank,
-    (SELECT COUNT(*) FROM cities c2 WHERE c2.continent = base.continent) as cities_in_continent
-FROM base;
+    (SELECT COUNT(*) FROM cities c2 WHERE c2.continent = base.continent) as cities_in_continent,
+    -- NEW: MEASURED walking speed (appended)
+    base.avg_measured_walking_speed,
+    base.median_measured_walking_speed,
+    base.measured_speed_video_count,
+    measured_ranked.measured_walking_speed_rank
+FROM base
+LEFT JOIN measured_ranked ON measured_ranked.city_id = base.city_id;
 
 -- Create index on materialized view
 CREATE INDEX IF NOT EXISTS idx_mv_city_insights_city ON mv_city_insights(city_id);

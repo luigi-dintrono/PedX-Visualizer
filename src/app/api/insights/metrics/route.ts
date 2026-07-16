@@ -22,6 +22,14 @@ const METRICS: {
     description: 'Average pedestrian crossing speed (m/s) across cities',
   },
   {
+    metric_type: 'measured_walking_speed',
+    cityColumn: 'avg_measured_walking_speed',
+    globalAvgColumn: 'global_avg_measured_walking_speed',
+    globalMedianColumn: 'global_median_measured_walking_speed',
+    description:
+      'Measured walking speed (m/s) — directly measured from dense video tracking, unlike crossing speed which is an imported city-level constant',
+  },
+  {
     metric_type: 'risky_crossing',
     cityColumn: 'avg_risky_crossing_ratio',
     globalAvgColumn: 'global_avg_risky_crossing_ratio',

@@ -81,6 +81,12 @@ const BEHAVIOR_METRICS = [
     icon: Gauge,
   },
   {
+    value: 'measured_walking_speed',
+    label: 'Measured Walking Speed (m/s)',
+    description: 'Measured from video tracking (not the imported city constant)',
+    icon: Gauge,
+  },
+  {
     value: 'crossing_time',
     label: 'Crossing Time',
     description: 'Duration of crossing',

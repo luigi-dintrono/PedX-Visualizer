@@ -134,6 +134,10 @@ export function InfoSidebar() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [globalInsights, setGlobalInsights] = useState<{
     crossing_speed: number | null;
+    // MEASURED walking speed (dense video tracking) — null until any video has
+    // been through the dense-tracking pass; never coerced to 0.
+    measured_walking_speed: number | null;
+    videos_with_measured_speed?: number;
     crossing_time: number | null;
     risky_crossing_rate: number | null;
     run_red_light_rate: number | null;
@@ -146,6 +150,8 @@ export function InfoSidebar() {
       crossing_speed: { rank: number | null; total_cities: number | null };
       risky_crossing: { rank: number | null; total_cities: number | null };
       run_red_light: { rank: number | null; total_cities: number | null };
+      // Sparse MEASURED metric: rank only among cities with dense-tracked videos
+      measured_walking_speed: { rank: number | null; total_cities: number | null };
     };
     environment: {
       weather: Array<{ type: string; percentage: number }>;
@@ -286,6 +292,7 @@ export function InfoSidebar() {
       // Map metric display names to API keys
       const metricMap: { [key: string]: string } = {
         'Crossing Speed': 'crossing-speed',
+        'Measured Walking Speed': 'measured-walking-speed',
         'Time to Start': 'crossing-time',
         'Risky Crossing': 'risky-crossing',
         'Red Light Rate': 'red-light',
@@ -374,6 +381,10 @@ export function InfoSidebar() {
         globalValue = globalInsights.crossing_speed
         metricType = 'speed'
         break
+      case 'measured_walking_speed':
+        globalValue = globalInsights.measured_walking_speed
+        metricType = 'speed'
+        break
       case 'crossing_time':
         globalValue = globalInsights.crossing_time
         metricType = 'time'
@@ -409,7 +420,7 @@ export function InfoSidebar() {
         formatted: result.formatted,
         color: result.delta !== null && result.delta > 0 ? 'text-green-600' : 'text-red-600'
       }
-    } else if (metricKey === 'crossing_speed') {
+    } else if (metricKey === 'crossing_speed' || metricKey === 'measured_walking_speed') {
       // Higher speed might be better (more efficient) - green for positive, red for negative
       return {
         formatted: result.formatted,
@@ -1051,7 +1062,53 @@ export function InfoSidebar() {
               </CardContent>
             </Card>
 
-            <Card 
+            {/* MEASURED walking speed — from PedX-Insight dense video tracking, unlike
+                Crossing Speed above, which is an imported city-level constant.
+                Sparse metric: shows "No data" (never 0) for cities without
+                dense-tracked videos, and is only clickable when data exists. */}
+            <Card
+              className={filteredCityData.avg_measured_walking_speed != null
+                ? "cursor-pointer hover:bg-muted/50 transition-colors"
+                : "opacity-70"}
+              onClick={() => {
+                if (filteredCityData.avg_measured_walking_speed != null) {
+                  handleMetricCardClick('Measured Walking Speed')
+                }
+              }}
+              title="Measured from dense pedestrian tracking in this city's videos (PedX-Insight), unlike Crossing Speed which is an imported city-level constant"
+            >
+              <CardContent className="p-3">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center gap-2">
+                    <Gauge className="w-4 h-4 text-teal-600" />
+                    <span className="text-xs font-medium">Measured Walking Speed</span>
+                  </div>
+                  {filteredCityData.avg_measured_walking_speed != null && (
+                    <LineChart className="w-4 h-4 text-muted-foreground" />
+                  )}
+                </div>
+                {filteredCityData.avg_measured_walking_speed != null ? (
+                  <>
+                    <div className="text-lg font-bold">{formatNumber(filteredCityData.avg_measured_walking_speed, 2)} m/s</div>
+                    <div className={`text-xs ${getMetricDelta('measured_walking_speed', filteredCityData.avg_measured_walking_speed).color}`}>
+                      {getMetricDelta('measured_walking_speed', filteredCityData.avg_measured_walking_speed).formatted} vs global (measured)
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-1">
+                      Measured from {Number(filteredCityData.measured_speed_video_count) || 0} video{Number(filteredCityData.measured_speed_video_count) === 1 ? '' : 's'}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-lg font-bold text-muted-foreground">No data</div>
+                    <div className="text-xs text-muted-foreground">
+                      No dense-tracked videos yet (unlike Crossing Speed, this is measured, not imported)
+                    </div>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card
               className="cursor-pointer hover:bg-muted/50 transition-colors"
               onClick={() => handleMetricCardClick('Time to Start')}
             >
@@ -1274,6 +1331,13 @@ export function InfoSidebar() {
                       <span className="font-medium">{filteredCityData.city}</span> ranks #{cityDetails.rankings.crossing_speed.rank} out of {cityDetails.rankings.crossing_speed.total_cities} cities for crossing speed
                     </div>
                   )}
+                  {/* Measured walking speed rank — only among cities with dense-tracked
+                      videos (sparse metric; absent rank means no measured data, not last place) */}
+                  {cityDetails.rankings.measured_walking_speed?.rank && cityDetails.rankings.measured_walking_speed?.total_cities ? (
+                    <div className="text-sm">
+                      <span className="font-medium">{filteredCityData.city}</span> ranks #{cityDetails.rankings.measured_walking_speed.rank} out of {cityDetails.rankings.measured_walking_speed.total_cities} cities with measured walking speed data
+                    </div>
+                  ) : null}
                   {cityDetails.risk_factors.length > 0 && (
                     <div className="text-sm">
                       Top risk factors: {cityDetails.risk_factors.slice(0, 3).map((rf, idx) => (

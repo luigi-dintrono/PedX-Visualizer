@@ -110,6 +110,18 @@ const METRIC_CONFIG = {
       max: [0, 1, 0, 0.8], // Green for fast (safer)
     },
   },
+  measured_walking_speed: {
+    // MEASURED from dense video tracking (PedX-Insight), not the imported city
+    // constant behind crossing_speed. Sparse: cities without measured videos
+    // have NULL and are simply not painted (no fake zeros).
+    property: 'avg_measured_walking_speed',
+    name: 'Measured Walking Speed',
+    unit: 'm/s',
+    colorScale: {
+      min: [1, 0, 0, 0.6], // Red for slow (dangerous)
+      max: [0, 1, 0, 0.8], // Green for fast (safer)
+    },
+  },
   crossing_time: {
     property: 'avg_crossing_time',
     name: 'Average Crossing Time',

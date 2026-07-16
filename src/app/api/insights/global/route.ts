@@ -12,8 +12,10 @@ export async function GET(request: NextRequest) {
   try {
     // Fetch global baseline from materialized view
     const globalResult = await pool.query(`
-      SELECT 
+      SELECT
         global_avg_crossing_speed,
+        global_avg_measured_walking_speed,
+        global_videos_with_measured_speed,
         global_avg_risky_crossing_ratio,
         global_avg_run_red_light_ratio,
         global_avg_crosswalk_usage_ratio,
@@ -59,6 +61,10 @@ export async function GET(request: NextRequest) {
 
     const globalInsights = {
       crossing_speed: num(global.global_avg_crossing_speed),
+      // MEASURED walking speed (from video tracking, not the imported city constant).
+      // null (not 0) when no videos have been through the dense-tracking pass yet.
+      measured_walking_speed: num(global.global_avg_measured_walking_speed),
+      videos_with_measured_speed: parseInt(global.global_videos_with_measured_speed, 10) || 0,
       crossing_time: globalAvgCrossingTime,
       risky_crossing_rate: rate(global.global_risky_crossing_rate),
       run_red_light_rate: rate(global.global_run_red_light_rate),

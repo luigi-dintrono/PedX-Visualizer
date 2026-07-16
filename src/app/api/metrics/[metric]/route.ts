@@ -52,6 +52,15 @@ const METRIC_CONFIGS: Record<string, MetricConfig> = {
     rank_column: 'speed_rank',
     higher_is_better: true,
   },
+  measured_walking_speed: {
+    name: 'Measured Walking Speed',
+    unit: 'm/s',
+    description:
+      'Walking speed MEASURED from dense pedestrian tracking in the videos (PedX-Insight [S1]) — unlike Crossing Speed, which is an imported city-level constant. Only cities with dense-tracked videos have values.',
+    column_name: 'avg_measured_walking_speed',
+    rank_column: 'measured_walking_speed_rank',
+    higher_is_better: true,
+  },
   crossing_time: {
     name: 'Crossing Time',
     unit: 's',
@@ -103,8 +112,9 @@ export async function GET(
 
     // Fetch global baseline
     const globalResult = await pool.query(`
-      SELECT 
+      SELECT
         global_avg_crossing_speed,
+        global_avg_measured_walking_speed,
         global_avg_risky_crossing_ratio,
         global_avg_run_red_light_ratio,
         global_avg_crosswalk_usage_ratio,
@@ -139,6 +149,7 @@ export async function GET(
       crosswalk_usage: 'global_avg_crosswalk_usage_ratio',
       phone_usage: 'global_phone_usage_rate',
       crossing_speed: 'global_avg_crossing_speed',
+      measured_walking_speed: 'global_avg_measured_walking_speed',
       crossing_time: null, // fetched separately (mv_global_insights has no crossing_time)
       avg_age: 'global_avg_pedestrian_age',
       pedestrian_density: null,

@@ -7,6 +7,9 @@ interface CityRankings {
   risky_rank?: number;
   red_light_rank?: number;
   total_cities_for_speed?: number;
+  // MEASURED walking speed (sparse: only cities with dense-tracked videos have a rank)
+  measured_walking_speed_rank?: number;
+  total_cities_for_measured_speed?: number;
 }
 
 interface RiskFactorRow {
@@ -78,11 +81,13 @@ export async function GET(
     let rankings: CityRankings = {};
     try {
       const rankingsResult = await pool.query(`
-        SELECT 
+        SELECT
           speed_rank,
           risky_rank,
           red_light_rank,
-          (SELECT COUNT(*) FROM mv_city_insights WHERE speed_rank IS NOT NULL) as total_cities_for_speed
+          measured_walking_speed_rank,
+          (SELECT COUNT(*) FROM mv_city_insights WHERE speed_rank IS NOT NULL) as total_cities_for_speed,
+          (SELECT COUNT(*) FROM mv_city_insights WHERE measured_walking_speed_rank IS NOT NULL) as total_cities_for_measured_speed
         FROM mv_city_insights
         WHERE city_id = $1
       `, [cityId]);
@@ -116,6 +121,17 @@ export async function GET(
                GROUP BY v.city_id
                HAVING AVG(v.run_red_light_ratio) > (SELECT AVG(v2.run_red_light_ratio) FROM videos v2 WHERE v2.city_id = $1)
              ) sub) as red_light_rank,
+            (CASE WHEN EXISTS (SELECT 1 FROM videos v0 WHERE v0.city_id = $1 AND v0.measured_walking_speed_mps IS NOT NULL)
+             THEN (SELECT COUNT(*) + 1
+               FROM (
+                 SELECT AVG(v.measured_walking_speed_mps) as avg_measured
+                 FROM videos v
+                 WHERE v.city_id != $1 AND v.measured_walking_speed_mps IS NOT NULL
+                 GROUP BY v.city_id
+                 HAVING AVG(v.measured_walking_speed_mps) > (SELECT AVG(v2.measured_walking_speed_mps) FROM videos v2 WHERE v2.city_id = $1 AND v2.measured_walking_speed_mps IS NOT NULL)
+               ) sub)
+             ELSE NULL END) as measured_walking_speed_rank,
+            (SELECT COUNT(DISTINCT city_id) FROM videos WHERE measured_walking_speed_mps IS NOT NULL) as total_cities_for_measured_speed,
             (SELECT COUNT(DISTINCT city_id) FROM videos WHERE crossing_speed IS NOT NULL) as total_cities_for_speed
         `, [cityId]);
         rankings = directRankings.rows[0] || {};
@@ -410,6 +426,12 @@ export async function GET(
         run_red_light: {
           rank: rankings.red_light_rank ? Number(rankings.red_light_rank) : null,
           total_cities: rankings.total_cities_for_speed ? Number(rankings.total_cities_for_speed) : null
+        },
+        // MEASURED walking speed: rank is null unless this city has dense-tracked videos,
+        // and total_cities counts only cities with measured data (UI shows "no data", not 0).
+        measured_walking_speed: {
+          rank: rankings.measured_walking_speed_rank ? Number(rankings.measured_walking_speed_rank) : null,
+          total_cities: rankings.total_cities_for_measured_speed ? Number(rankings.total_cities_for_measured_speed) : null
         }
       },
       environment: {

@@ -71,6 +71,11 @@ export interface CityGlobeData {
   avg_pedestrian_age: number | string | null;
   avg_pedestrians_per_video: number | string | null;
   avg_crossing_speed: number | string | null;
+  // MEASURED walking speed (m/s) from PedX-Insight dense tracking — unlike
+  // avg_crossing_speed, which is an imported city-level constant. Sparse: NULL
+  // for cities without dense-tracked videos (UI must show "no data", not 0).
+  avg_measured_walking_speed: number | string | null;
+  measured_speed_video_count: number | string | null;
   avg_crossing_time: number | string | null;
   avg_phone_usage_ratio: number | string | null;
   avg_road_width: number | string | null;

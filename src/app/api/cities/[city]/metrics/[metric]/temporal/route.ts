@@ -25,6 +25,14 @@ export async function GET(
         unit: 'm/s',
         name: 'Crossing Speed'
       },
+      // MEASURED walking speed (PedX-Insight dense tracking), not the imported
+      // city constant behind crossing-speed. Sparse: months without measured
+      // videos yield NULL and are skipped, never rendered as 0.
+      'measured-walking-speed': {
+        column: 'avg_measured_walking_speed',
+        unit: 'm/s',
+        name: 'Measured Walking Speed'
+      },
       'crossing-time': {
         column: 'avg_crossing_time',
         unit: 'seconds',
@@ -151,8 +159,13 @@ export async function GET(
         ORDER BY ds.month_date ASC
       `;
     } else {
-      // Use video columns directly (crossing_speed, crossing_time)
-      const videoColumn = metricConfig.column.replace('avg_', '');
+      // Use video columns directly (crossing_speed, crossing_time,
+      // measured_walking_speed_mps). The measured metric's videos column does
+      // not follow the strip-"avg_" convention, so map it explicitly.
+      const videoColumn =
+        metricConfig.column === 'avg_measured_walking_speed'
+          ? 'measured_walking_speed_mps'
+          : metricConfig.column.replace('avg_', '');
       monthlyQuery = `
         WITH monthly_data AS (
           SELECT 
