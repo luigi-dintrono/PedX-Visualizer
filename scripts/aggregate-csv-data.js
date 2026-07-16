@@ -448,6 +448,9 @@ class DatabaseAggregator {
                     accident_prob: safeNumeric(row.accident_prob),
                     crossing_time: safeNumeric(row.crossing_time),
                     crossing_speed: safeNumeric(row.crossing_speed),
+                    // Measured per-video median walking speed from [S1] (reliable tracks only);
+                    // NULL for videos analyzed before the dense-tracking pass.
+                    measured_walking_speed_mps: safeNumeric(row.measured_avg_walking_speed_mps),
                     data_collected_date: dataCollectedDate,
                     import_batch_id: this.currentImportBatchId
                 };
@@ -472,11 +475,12 @@ class DatabaseAggregator {
                         main_weather, sidewalk_prob, crosswalk_prob, traffic_light_prob,
                         avg_road_width, crack_prob, potholes_prob, police_car_prob,
                         arrow_board_prob, cones_prob, accident_prob, crossing_time, crossing_speed,
+                        measured_walking_speed_mps,
                         data_collected_date, import_batch_id, first_imported_at, last_updated_at
                     ) VALUES (
                         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
                         $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30,
-                        $31, $32, $33, $34
+                        $31, $32, $33, $34, $35
                     )
                     ON CONFLICT (link) 
                     DO UPDATE SET
@@ -509,6 +513,7 @@ class DatabaseAggregator {
                         accident_prob = EXCLUDED.accident_prob,
                         crossing_time = EXCLUDED.crossing_time,
                         crossing_speed = EXCLUDED.crossing_speed,
+                        measured_walking_speed_mps = EXCLUDED.measured_walking_speed_mps,
                         data_collected_date = COALESCE(EXCLUDED.data_collected_date, videos.data_collected_date),
                         import_batch_id = EXCLUDED.import_batch_id,
                         last_updated_at = CURRENT_TIMESTAMP,
@@ -547,6 +552,7 @@ class DatabaseAggregator {
                     videoDataValues.accident_prob,
                     videoDataValues.crossing_time,
                     videoDataValues.crossing_speed,
+                    videoDataValues.measured_walking_speed_mps,
                     videoDataValues.data_collected_date,
                     videoDataValues.import_batch_id,
                     firstImportedAt,
