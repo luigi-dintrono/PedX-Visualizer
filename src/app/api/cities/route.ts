@@ -36,9 +36,24 @@ export async function GET(request: NextRequest) {
       `;
       params.push(targetDate.toISOString().split('T')[0]);
     } else {
-      // Use default cumulative view (all data)
+      // Use the materialized snapshot (refreshed after every import) — the plain view
+      // re-aggregated cities × videos × pedestrians on every page load. For list
+      // requests the heavy per-city insights JSONB is excluded at the SQL level (it was
+      // previously fetched from Postgres and discarded in JS); a specific ?city= request
+      // keeps it. Column list = mv_city_summary minus insights.
+      const cols = city
+        ? '*'
+        : `id, city, country, continent, latitude, longitude, population_city,
+           traffic_mortality, literacy_rate, gini, total_videos, total_pedestrians,
+           avg_video_duration, avg_pedestrians_per_video, avg_risky_crossing_ratio,
+           avg_run_red_light_ratio, avg_crosswalk_usage_ratio, avg_pedestrian_age,
+           avg_crossing_speed, avg_crossing_time, avg_phone_usage_ratio, avg_road_width,
+           risky_crossing_rate, run_red_light_rate, crosswalk_usage_rate, phone_usage_rate,
+           risk_intensity, earliest_data_date, latest_data_date, earliest_import_date,
+           latest_update_date, import_batch_count, avg_measured_walking_speed,
+           measured_speed_video_count`;
       query = `
-        SELECT * FROM v_city_summary
+        SELECT ${cols} FROM mv_city_summary
         WHERE 1=1
       `;
     }
@@ -61,10 +76,19 @@ export async function GET(request: NextRequest) {
     // unreliable (it runs on an arbitrary pooled connection) and was removed.
     const result = await pool.query(query, params);
     
+    // The per-city `insights` JSONB dominates the bulk payload (~90% of a ~2 MB response
+    // for all cities) but is only ever rendered for ONE selected city — and the
+    // /api/cities/[city]/details response now carries it. Strip it from list responses;
+    // keep it when a specific city was requested.
+    const includeInsights = !!city;
+
     // Ensure all string fields are properly encoded and numeric fields are numbers
     const encodedData = result.rows.map((row: any) => {
       const encodedRow: any = {};
       for (const [key, value] of Object.entries(row)) {
+        if (key === 'insights' && !includeInsights) {
+          continue;
+        }
         if (typeof value === 'string') {
           // Normalize the string to ensure proper UTF-8 encoding
           encodedRow[key] = value.normalize('NFC');

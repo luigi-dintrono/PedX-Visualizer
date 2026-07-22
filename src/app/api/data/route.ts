@@ -2,6 +2,32 @@ import { NextRequest, NextResponse } from 'next/server';
 import { pool } from '@/lib/database';
 import { READ_CACHE_HEADERS } from '@/lib/http';
 
+// Columns served to the globe. Everything here is either paintable via METRIC_CONFIG
+// (rates, speeds, age, density, road width, traffic mortality) or shown in the hover
+// card (population, videos, pedestrians). Dropped vs the old SELECT: videos_analyzed
+// (duplicate of total_videos), the four video-level avg_*_ratio twins, risk_intensity,
+// literacy_rate, gini, measured_speed_video_count — nothing in the viewer read them.
+// DECIMAL columns are rounded and cast to float so they serialize as compact JSON
+// numbers instead of 15+ digit strings (roughly halves the per-row payload).
+const DATA_COLUMNS = (p: string) => `
+          ${p}id, ${p}city, ${p}country, ${p}continent,
+          round(${p}latitude::numeric, 6)::float AS latitude,
+          round(${p}longitude::numeric, 6)::float AS longitude,
+          ${p}population_city::float AS population,
+          ${p}total_videos::int AS total_videos,
+          ${p}total_pedestrians::int AS total_pedestrians,
+          round(${p}avg_pedestrian_age::numeric, 2)::float AS avg_pedestrian_age,
+          round(${p}avg_pedestrians_per_video::numeric, 2)::float AS avg_pedestrians_per_video,
+          round(${p}avg_crossing_speed::numeric, 4)::float AS avg_crossing_speed,
+          round(${p}avg_measured_walking_speed::numeric, 4)::float AS avg_measured_walking_speed,
+          round(${p}avg_crossing_time::numeric, 2)::float AS avg_crossing_time,
+          round(${p}avg_road_width::numeric, 2)::float AS avg_road_width,
+          round(${p}risky_crossing_rate::numeric, 4)::float AS risky_crossing_rate,
+          round(${p}run_red_light_rate::numeric, 4)::float AS run_red_light_rate,
+          round(${p}crosswalk_usage_rate::numeric, 4)::float AS crosswalk_usage_rate,
+          round(${p}phone_usage_rate::numeric, 4)::float AS phone_usage_rate,
+          round(${p}traffic_mortality::numeric, 2)::float AS traffic_mortality`;
+
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
@@ -187,67 +213,23 @@ export async function GET(request: NextRequest) {
           GROUP BY c.id
           HAVING COUNT(DISTINCT p.video_id) > 0
         )
-        SELECT 
-          vcs.id, vcs.city, vcs.country, vcs.continent, vcs.latitude, vcs.longitude,
-          vcs.population_city as population,
-          vcs.total_videos as videos_analyzed,
-          vcs.total_videos,
-          vcs.total_pedestrians,
-          vcs.avg_risky_crossing_ratio,
-          vcs.avg_run_red_light_ratio,
-          vcs.avg_crosswalk_usage_ratio,
-          vcs.avg_pedestrian_age,
-          vcs.avg_pedestrians_per_video,
-          vcs.avg_crossing_speed,
-          vcs.avg_measured_walking_speed,
-          vcs.measured_speed_video_count,
-          vcs.avg_crossing_time,
-          vcs.avg_phone_usage_ratio,
-          vcs.avg_road_width,
-          vcs.risky_crossing_rate,
-          vcs.run_red_light_rate,
-          vcs.crosswalk_usage_rate,
-          vcs.phone_usage_rate,
-          vcs.traffic_mortality,
-          vcs.literacy_rate,
-          vcs.gini,
-          vcs.risk_intensity
-        FROM v_city_summary vcs
+        SELECT ${DATA_COLUMNS('vcs.')}
+        FROM mv_city_summary vcs
         INNER JOIN city_filtered_counts cfc ON vcs.id = cfc.id
-        WHERE vcs.latitude IS NOT NULL 
+        WHERE vcs.latitude IS NOT NULL
           AND vcs.longitude IS NOT NULL
           AND vcs.total_pedestrians > 0
       `;
     } else {
-      // Standard query without vehicle counts
+      // Standard query without vehicle counts. total_pedestrians > 0 preserves the old
+      // behavior: the frontend used to always send vehicle params, forcing the CTE path,
+      // whose INNER JOINs excluded cities with no pedestrian data — without this, such
+      // cities would suddenly appear on city-level metrics like traffic_mortality.
       query = `
-        SELECT 
-          id, city, country, continent, latitude, longitude,
-          population_city as population,
-          total_videos as videos_analyzed,
-          total_videos,
-          total_pedestrians,
-          avg_risky_crossing_ratio,
-          avg_run_red_light_ratio,
-          avg_crosswalk_usage_ratio,
-          avg_pedestrian_age,
-          avg_pedestrians_per_video,
-          avg_crossing_speed,
-          avg_measured_walking_speed,
-          measured_speed_video_count,
-          avg_crossing_time,
-          avg_phone_usage_ratio,
-          avg_road_width,
-          risky_crossing_rate,
-          run_red_light_rate,
-          crosswalk_usage_rate,
-          phone_usage_rate,
-          traffic_mortality,
-          literacy_rate,
-          gini,
-          risk_intensity
-        FROM v_city_summary
+        SELECT ${DATA_COLUMNS('')}
+        FROM mv_city_summary
         WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+          AND total_pedestrians > 0
       `;
     }
 

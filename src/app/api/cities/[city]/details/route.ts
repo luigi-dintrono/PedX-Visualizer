@@ -62,9 +62,10 @@ export async function GET(
     // A per-request `SET client_encoding` on the pool is unreliable (it lands on an
     // arbitrary pooled connection, not necessarily the ones used below) and was removed.
 
-    // Get city ID first
+    // Get city ID first (plus the per-city insights JSONB: serving it here keeps the huge
+    // bulk /api/cities list free of insights — they're only ever shown for the selected city)
     const cityResult = await pool.query(
-      `SELECT id FROM cities WHERE city = $1 LIMIT 1`,
+      `SELECT id, insights FROM cities WHERE city = $1 LIMIT 1`,
       [city]
     );
 
@@ -77,10 +78,31 @@ export async function GET(
 
     const cityId = cityResult.rows[0].id;
 
-    // 1. Get Rankings from mv_city_insights (with fallback to direct calculation)
-    let rankings: CityRankings = {};
-    try {
-      const rankingsResult = await pool.query(`
+    // All primary queries below are independent, so run them CONCURRENTLY instead of as
+    // ~8 sequential Neon round-trips (which made this route take >1s warm). Each query keeps
+    // its own error isolation: a failure logs and yields empty rows, never a 500. The rare
+    // fallback queries (empty MV row, no video weather, missing avg age) still run
+    // sequentially afterwards, matching the original behavior.
+    const safeQuery = <T,>(label: string, sql: string, params: unknown[]): Promise<{ rows: T[] }> =>
+      pool.query(sql, params).then(
+        (r) => r as unknown as { rows: T[] },
+        (err) => {
+          console.error(`Error fetching ${label}:`, err);
+          return { rows: [] as T[] };
+        }
+      );
+
+    const [
+      rankingsResult,
+      environmentPrimary,
+      daytimePrimary,
+      genderPrimary,
+      agePrimary,
+      vehiclesPrimary,
+      riskFactorsPrimary,
+      citySummaryResult,
+    ] = await Promise.all([
+      safeQuery<CityRankings>('rankings', `
         SELECT
           speed_rank,
           risky_rank,
@@ -90,10 +112,136 @@ export async function GET(
           (SELECT COUNT(*) FROM mv_city_insights WHERE measured_walking_speed_rank IS NOT NULL) as total_cities_for_measured_speed
         FROM mv_city_insights
         WHERE city_id = $1
-      `, [cityId]);
-      rankings = rankingsResult.rows[0] || {};
-      
-      // If no data in materialized view, calculate directly
+      `, [cityId]),
+      safeQuery<EnvironmentRow>('environment data', `
+        SELECT
+          main_weather,
+          COUNT(*) as video_count,
+          COUNT(*)::FLOAT / NULLIF(SUM(COUNT(*)) OVER (), 0) * 100 as percentage
+        FROM videos
+        WHERE city_id = $1
+          AND main_weather IS NOT NULL
+          AND main_weather != ''
+          AND main_weather NOT IN ('sunrise', 'sunset', 'dawn', 'dusk')
+        GROUP BY main_weather
+        ORDER BY video_count DESC
+      `, [cityId]),
+      // daytime is a BOOLEAN column, so compare it as one. The previous
+      // `p.daytime = 1 / = '1'` comparisons threw "operator does not exist: boolean = integer",
+      // which was swallowed by the catch and left the Day/Night breakdown permanently empty.
+      safeQuery<DaytimeRow>('daytime data', `
+        SELECT
+          CASE WHEN p.daytime THEN 'Day' ELSE 'Night' END as daytime,
+          COUNT(*) as count,
+          COUNT(*)::FLOAT / NULLIF(SUM(COUNT(*)) OVER (), 0) * 100 as percentage
+        FROM pedestrians p
+        JOIN videos v ON p.video_id = v.id
+        WHERE v.city_id = $1 AND p.daytime IS NOT NULL
+        GROUP BY CASE WHEN p.daytime THEN 'Day' ELSE 'Night' END
+        ORDER BY count DESC
+      `, [cityId]),
+      safeQuery<GenderRow>('gender data', `
+        SELECT
+          gender,
+          COUNT(*) as count,
+          COUNT(*)::FLOAT / NULLIF(SUM(COUNT(*)) OVER (), 0) * 100 as percentage
+        FROM pedestrians p
+        JOIN videos v ON p.video_id = v.id
+        WHERE v.city_id = $1 AND p.gender IS NOT NULL AND p.gender != ''
+        GROUP BY gender
+        ORDER BY count DESC
+      `, [cityId]),
+      safeQuery<AgeGroupRow>('age data', `
+        SELECT
+          CASE
+            WHEN age < 18 THEN 'Under 18'
+            WHEN age BETWEEN 18 AND 30 THEN '18-30'
+            WHEN age BETWEEN 31 AND 50 THEN '31-50'
+            WHEN age > 50 THEN '50+'
+            ELSE 'Unknown'
+          END as age_group,
+          COUNT(*) as count,
+          AVG(CASE WHEN risky_crossing THEN 1 ELSE 0 END) * 100 as risky_rate,
+          AVG(CASE WHEN run_red_light THEN 1 ELSE 0 END) * 100 as red_light_rate
+        FROM pedestrians p
+        JOIN videos v ON p.video_id = v.id
+        WHERE v.city_id = $1 AND p.age IS NOT NULL
+        GROUP BY
+          CASE
+            WHEN age < 18 THEN 'Under 18'
+            WHEN age BETWEEN 18 AND 30 THEN '18-30'
+            WHEN age BETWEEN 31 AND 50 THEN '31-50'
+            WHEN age > 50 THEN '50+'
+            ELSE 'Unknown'
+          END
+        ORDER BY
+          -- Must be an aggregate: this expression differs from the GROUP BY expression, so
+          -- bare CASE ... age ... raised 42803 ("p.age must appear in GROUP BY") — silently
+          -- swallowed for years, leaving the age breakdown permanently empty. Every row in a
+          -- group shares the same bucket, so MIN() picks that bucket's sort key.
+          MIN(CASE
+            WHEN age < 18 THEN 1
+            WHEN age BETWEEN 18 AND 30 THEN 2
+            WHEN age BETWEEN 31 AND 50 THEN 3
+            WHEN age > 50 THEN 4
+            ELSE 5
+          END)
+      `, [cityId]),
+      // Vehicle type distribution over ALL vehicle observations so percentages sum to 100.
+      // Single scan with FILTER + unpivot (was 7 UNION ALL scans of pedestrians).
+      safeQuery<VehicleRow>('vehicle data', `
+        WITH counts AS (
+          SELECT
+            COUNT(*) FILTER (WHERE p.car)       AS car,
+            COUNT(*) FILTER (WHERE p.bus)       AS bus,
+            COUNT(*) FILTER (WHERE p.motorbike) AS motorbike,
+            COUNT(*) FILTER (WHERE p.bicycle)   AS bicycle,
+            COUNT(*) FILTER (WHERE p.truck)     AS truck,
+            COUNT(*) FILTER (WHERE p.taxi)      AS taxi,
+            COUNT(*) FILTER (WHERE p.suv)       AS suv
+          FROM pedestrians p
+          JOIN videos v ON p.video_id = v.id
+          WHERE v.city_id = $1
+        ),
+        vehicle_observations AS (
+          SELECT t.vehicle_type, t.count
+          FROM counts c
+          CROSS JOIN LATERAL (VALUES
+            ('car', c.car), ('bus', c.bus), ('motorbike', c.motorbike),
+            ('bicycle', c.bicycle), ('truck', c.truck), ('taxi', c.taxi), ('suv', c.suv)
+          ) AS t(vehicle_type, count)
+        )
+        SELECT
+          vehicle_type,
+          count,
+          count::FLOAT / NULLIF(SUM(count) OVER (), 0) * 100 as percentage
+        FROM vehicle_observations
+        WHERE count > 0
+        ORDER BY count DESC
+        LIMIT 10
+      `, [cityId]),
+      safeQuery<RiskFactorRow>('risk factors', `
+        SELECT
+          'Weather: ' || main_weather as factor,
+          AVG(risky_crossing_ratio) * 100 as risk_increase,
+          COUNT(*) as sample_size
+        FROM videos
+        WHERE city_id = $1 AND main_weather IS NOT NULL AND main_weather != ''
+        GROUP BY main_weather
+        HAVING COUNT(*) >= 2
+        ORDER BY AVG(risky_crossing_ratio) DESC
+        LIMIT 3
+      `, [cityId]),
+      safeQuery<{ avg_pedestrian_age?: number }>('city summary avg age', `
+        SELECT avg_pedestrian_age
+        FROM mv_city_summary
+        WHERE id = $1
+      `, [cityId]),
+    ]);
+
+    // 1. Rankings (fallback to direct calculation when the MV has no row for this city)
+    let rankings: CityRankings = rankingsResult.rows[0] || {};
+    try {
       if (!rankings.speed_rank) {
         const directRankings = await pool.query(`
           SELECT 
@@ -141,241 +289,36 @@ export async function GET(
       // Continue with empty rankings
     }
 
-    // 2. Get Environment data (weather and daytime breakdown)
-    let environmentResult: { rows: EnvironmentRow[] } = { rows: [] };
-    let daytimeResult: { rows: DaytimeRow[] } = { rows: [] };
-    
-    try {
-      // Filter out time-based weather labels (sunrise, sunset) and get actual weather
-      environmentResult = await pool.query(`
-        SELECT 
-          main_weather,
-          COUNT(*) as video_count,
-          COUNT(*)::FLOAT / NULLIF(SUM(COUNT(*)) OVER (), 0) * 100 as percentage
-        FROM videos
-        WHERE city_id = $1 
-          AND main_weather IS NOT NULL 
-          AND main_weather != ''
-          AND main_weather NOT IN ('sunrise', 'sunset', 'dawn', 'dusk')
-        GROUP BY main_weather
+    // 2. Environment (weather from the parallel batch; fall back to pedestrian-level
+    // weather only when the videos table had none) + daytime breakdown.
+    let environmentResult: { rows: EnvironmentRow[] } = environmentPrimary;
+    if (environmentResult.rows.length === 0) {
+      environmentResult = await safeQuery<EnvironmentRow>('environment fallback data', `
+        SELECT
+          weather as main_weather,
+          COUNT(DISTINCT p.video_id) as video_count,
+          COUNT(DISTINCT p.video_id)::FLOAT / NULLIF(SUM(COUNT(DISTINCT p.video_id)) OVER (), 0) * 100 as percentage
+        FROM pedestrians p
+        JOIN videos v ON p.video_id = v.id
+        WHERE v.city_id = $1
+          AND p.weather IS NOT NULL
+          AND p.weather != ''
+          AND p.weather NOT IN ('sunrise', 'sunset', 'dawn', 'dusk')
+        GROUP BY weather
         ORDER BY video_count DESC
       `, [cityId]);
-      
-      // If no weather data after filtering, try from pedestrians table
-      if (environmentResult.rows.length === 0) {
-        environmentResult = await pool.query(`
-          SELECT 
-            weather as main_weather,
-            COUNT(DISTINCT p.video_id) as video_count,
-            COUNT(DISTINCT p.video_id)::FLOAT / NULLIF(SUM(COUNT(DISTINCT p.video_id)) OVER (), 0) * 100 as percentage
-          FROM pedestrians p
-          JOIN videos v ON p.video_id = v.id
-          WHERE v.city_id = $1 
-            AND p.weather IS NOT NULL 
-            AND p.weather != ''
-            AND p.weather NOT IN ('sunrise', 'sunset', 'dawn', 'dusk')
-          GROUP BY weather
-          ORDER BY video_count DESC
-        `, [cityId]);
-      }
-    } catch (err) {
-      console.error('Error fetching environment data:', err);
     }
+    const daytimeResult: { rows: DaytimeRow[] } = daytimePrimary;
 
-    try {
-      // Get daytime breakdown from pedestrians table
-      // Note: daytime might be stored as 0/1 (0=night, 1=day) or true/false
-      // daytime is a BOOLEAN column, so compare it as one. The previous
-      // `p.daytime = 1 / = '1'` comparisons threw "operator does not exist: boolean = integer",
-      // which was swallowed by the catch and left the Day/Night breakdown permanently empty.
-      daytimeResult = await pool.query(`
-        SELECT
-          CASE WHEN p.daytime THEN 'Day' ELSE 'Night' END as daytime,
-          COUNT(*) as count,
-          COUNT(*)::FLOAT / NULLIF(SUM(COUNT(*)) OVER (), 0) * 100 as percentage
-        FROM pedestrians p
-        JOIN videos v ON p.video_id = v.id
-        WHERE v.city_id = $1 AND p.daytime IS NOT NULL
-        GROUP BY CASE WHEN p.daytime THEN 'Day' ELSE 'Night' END
-        ORDER BY count DESC
-      `, [cityId]);
-    } catch (err) {
-      console.error('Error fetching daytime data:', err);
-    }
+    // 3.-5. Demographics, vehicles and risk factors come straight from the parallel batch.
+    const genderResult: { rows: GenderRow[] } = genderPrimary;
+    const ageResult: { rows: AgeGroupRow[] } = agePrimary;
+    const vehiclesResult: { rows: VehicleRow[] } = vehiclesPrimary;
+    const riskFactorsResult: { rows: RiskFactorRow[] } = riskFactorsPrimary;
 
-    // 3. Get Demographics (gender and age breakdown)
-    let genderResult: { rows: GenderRow[] } = { rows: [] };
-    let ageResult: { rows: AgeGroupRow[] } = { rows: [] };
-    
-    try {
-      genderResult = await pool.query(`
-        SELECT 
-          gender,
-          COUNT(*) as count,
-          COUNT(*)::FLOAT / NULLIF(SUM(COUNT(*)) OVER (), 0) * 100 as percentage
-        FROM pedestrians p
-        JOIN videos v ON p.video_id = v.id
-        WHERE v.city_id = $1 AND p.gender IS NOT NULL AND p.gender != ''
-        GROUP BY gender
-        ORDER BY count DESC
-      `, [cityId]);
-    } catch (err) {
-      console.error('Error fetching gender data:', err);
-    }
-
-    try {
-      ageResult = await pool.query(`
-        SELECT 
-          CASE 
-            WHEN age < 18 THEN 'Under 18'
-            WHEN age BETWEEN 18 AND 30 THEN '18-30'
-            WHEN age BETWEEN 31 AND 50 THEN '31-50'
-            WHEN age > 50 THEN '50+'
-            ELSE 'Unknown'
-          END as age_group,
-          COUNT(*) as count,
-          AVG(CASE WHEN risky_crossing THEN 1 ELSE 0 END) * 100 as risky_rate,
-          AVG(CASE WHEN run_red_light THEN 1 ELSE 0 END) * 100 as red_light_rate
-        FROM pedestrians p
-        JOIN videos v ON p.video_id = v.id
-        WHERE v.city_id = $1 AND p.age IS NOT NULL
-        GROUP BY 
-          CASE 
-            WHEN age < 18 THEN 'Under 18'
-            WHEN age BETWEEN 18 AND 30 THEN '18-30'
-            WHEN age BETWEEN 31 AND 50 THEN '31-50'
-            WHEN age > 50 THEN '50+'
-            ELSE 'Unknown'
-          END
-        ORDER BY 
-          CASE 
-            WHEN age < 18 THEN 1
-            WHEN age BETWEEN 18 AND 30 THEN 2
-            WHEN age BETWEEN 31 AND 50 THEN 3
-            WHEN age > 50 THEN 4
-            ELSE 5
-          END
-      `, [cityId]);
-    } catch (err) {
-      console.error('Error fetching age data:', err);
-    }
-
-    // 4. Get Vehicles breakdown
-    // Calculate vehicle type distribution - what percentage of all vehicle observations are each type
-    // This ensures percentages add up to 100%
-    let vehiclesResult: { rows: VehicleRow[] } = { rows: [] };
-    
-    try {
-      // Count total vehicle observations (sum of all vehicle types)
-      // Then calculate what percentage each type represents
-      vehiclesResult = await pool.query(`
-        WITH vehicle_observations AS (
-          SELECT 
-            'car' as vehicle_type,
-            COUNT(*) FILTER (WHERE (p.car IS TRUE OR p.car::int = 1)) as count
-          FROM pedestrians p
-          JOIN videos v ON p.video_id = v.id
-          WHERE v.city_id = $1
-          
-          UNION ALL
-          
-          SELECT 
-            'bus' as vehicle_type,
-            COUNT(*) FILTER (WHERE (p.bus IS TRUE OR p.bus::int = 1)) as count
-          FROM pedestrians p
-          JOIN videos v ON p.video_id = v.id
-          WHERE v.city_id = $1
-          
-          UNION ALL
-          
-          SELECT 
-            'motorbike' as vehicle_type,
-            COUNT(*) FILTER (WHERE (p.motorbike IS TRUE OR p.motorbike::int = 1)) as count
-          FROM pedestrians p
-          JOIN videos v ON p.video_id = v.id
-          WHERE v.city_id = $1
-          
-          UNION ALL
-          
-          SELECT 
-            'bicycle' as vehicle_type,
-            COUNT(*) FILTER (WHERE (p.bicycle IS TRUE OR p.bicycle::int = 1)) as count
-          FROM pedestrians p
-          JOIN videos v ON p.video_id = v.id
-          WHERE v.city_id = $1
-          
-          UNION ALL
-          
-          SELECT 
-            'truck' as vehicle_type,
-            COUNT(*) FILTER (WHERE (p.truck IS TRUE OR p.truck::int = 1)) as count
-          FROM pedestrians p
-          JOIN videos v ON p.video_id = v.id
-          WHERE v.city_id = $1
-          
-          UNION ALL
-          
-          SELECT 
-            'taxi' as vehicle_type,
-            COUNT(*) FILTER (WHERE (p.taxi IS TRUE OR p.taxi::int = 1)) as count
-          FROM pedestrians p
-          JOIN videos v ON p.video_id = v.id
-          WHERE v.city_id = $1
-          
-          UNION ALL
-          
-          SELECT 
-            'suv' as vehicle_type,
-            COUNT(*) FILTER (WHERE (p.suv IS TRUE OR p.suv::int = 1)) as count
-          FROM pedestrians p
-          JOIN videos v ON p.video_id = v.id
-          WHERE v.city_id = $1
-        )
-        SELECT 
-          vehicle_type,
-          count,
-          -- Calculate percentage of total vehicle observations (not total pedestrians)
-          -- This makes percentages add up to 100%
-          count::FLOAT / NULLIF(SUM(count) OVER (), 0) * 100 as percentage
-        FROM vehicle_observations
-        WHERE count > 0
-        ORDER BY count DESC
-        LIMIT 10
-      `, [cityId]);
-    } catch (err) {
-      console.error('Error fetching vehicle data:', err);
-    }
-
-    // 5. Get risk factors (top factors that increase risk)
-    let riskFactorsResult: { rows: RiskFactorRow[] } = { rows: [] };
-    
-    try {
-      riskFactorsResult = await pool.query(`
-        SELECT 
-          'Weather: ' || main_weather as factor,
-          AVG(risky_crossing_ratio) * 100 as risk_increase,
-          COUNT(*) as sample_size
-        FROM videos
-        WHERE city_id = $1 AND main_weather IS NOT NULL AND main_weather != ''
-        GROUP BY main_weather
-        HAVING COUNT(*) >= 2
-        ORDER BY AVG(risky_crossing_ratio) DESC
-        LIMIT 3
-      `, [cityId]);
-    } catch (err) {
-      console.error('Error fetching risk factors:', err);
-    }
-
-    // 6. Get average pedestrian age - try from v_city_summary first, then calculate directly
+    // 6. Average pedestrian age — from v_city_summary (parallel batch), then direct fallbacks.
     let avgAgeResult: { rows: AgeRow[] } = { rows: [] };
     try {
-      // First try to get from v_city_summary (which already has avg_pedestrian_age calculated)
-      const citySummaryResult = await pool.query(`
-        SELECT avg_pedestrian_age
-        FROM v_city_summary
-        WHERE id = $1
-      `, [cityId]);
-      
       if (citySummaryResult.rows[0]?.avg_pedestrian_age) {
         avgAgeResult.rows[0] = { avg_age: citySummaryResult.rows[0].avg_pedestrian_age };
       } else {
@@ -464,7 +407,9 @@ export async function GET(
         risk_increase: row.risk_increase ? parseFloat(Number(row.risk_increase).toFixed(1)) : 0,
         sample_size: row.sample_size ? Number(row.sample_size) : 0
       })),
-      avg_pedestrian_age: avgAgeResult.rows[0]?.avg_age ? parseFloat(Number(avgAgeResult.rows[0].avg_age).toFixed(1)) : null
+      avg_pedestrian_age: avgAgeResult.rows[0]?.avg_age ? parseFloat(Number(avgAgeResult.rows[0].avg_age).toFixed(1)) : null,
+      // Generated per-city insight texts (cities.insights JSONB); no longer in the bulk list.
+      insights: cityResult.rows[0].insights ?? null
     };
 
     return NextResponse.json(

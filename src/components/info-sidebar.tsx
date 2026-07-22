@@ -21,7 +21,7 @@ import {
   Gauge,
   LineChart
 } from "lucide-react"
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -55,16 +55,6 @@ interface TopInsight {
   insight_category: string;
   relevance_score: number;
   data_confidence: string;
-}
-
-interface CityVideo {
-  id: number;
-  video_name: string;
-  link: string;
-  duration_seconds: number;
-  total_pedestrians: number;
-  city: string;
-  country: string;
 }
 
 interface MetricData {
@@ -121,9 +111,9 @@ interface TemporalMetricData {
 }
 
 export function InfoSidebar() {
-  const { filteredCityData, selectedCity, setSelectedCity, cityData, selectedMetrics, granularFilters } = useFilter()
+  // cityVideos comes from the context's single shared fetch (also used by the Globe's markers)
+  const { filteredCityData, selectedCity, setSelectedCity, cityData, cityVideos, selectedMetrics, granularFilters } = useFilter()
   const [topInsights, setTopInsights] = useState<TopInsight[]>([])
-  const [cityVideos, setCityVideos] = useState<CityVideo[]>([])
   const [metricData, setMetricData] = useState<MetricData | null>(null)
   const [metricRelationships, setMetricRelationships] = useState<MetricRelationship[]>([])
   const [loading, setLoading] = useState(false)
@@ -164,14 +154,15 @@ export function InfoSidebar() {
     vehicles: Array<{ type: string; percentage: number }>;
     risk_factors: Array<{ factor: string; risk_increase: number; sample_size: number }>;
     avg_pedestrian_age: number | null;
+    // Per-city insight texts, served here since the bulk /api/cities list no longer carries them
+    insights?: CityInsight[] | null;
   } | null>(null)
   const [cityDetailsLoading, setCityDetailsLoading] = useState(false)
+  const cityDetailsAbortRef = useRef<AbortController | null>(null)
 
-  // Debug logging to see what's happening
-  useEffect(() => {
-    console.log('InfoSidebar - selectedCity:', selectedCity)
-    console.log('InfoSidebar - filteredCityData:', filteredCityData)
-  }, [selectedCity, filteredCityData])
+  // Per-city insight texts: served by the details fetch (the bulk /api/cities list no
+  // longer carries the heavy insights JSONB); filteredCityData is the legacy fallback.
+  const cityInsights = cityDetails?.insights ?? filteredCityData?.insights ?? null
 
   // Fetch global insights once on mount
   useEffect(() => {
@@ -182,7 +173,6 @@ export function InfoSidebar() {
   useEffect(() => {
     if (!selectedCity && selectedMetrics.length === 0) {
       fetchTopInsights()
-      setCityVideos([]) // Clear videos when no city selected
       setMetricData(null)
       setMetricRelationships([])
     } else if (!selectedCity && selectedMetrics.length > 0) {
@@ -190,7 +180,7 @@ export function InfoSidebar() {
       fetchMetricData(selectedMetrics[0])
       fetchMetricRelationships(selectedMetrics[0])
     } else if (selectedCity) {
-      fetchCityVideos(selectedCity)
+      // (city videos arrive via FilterContext.cityVideos — one shared fetch)
       fetchCityDetails(selectedCity)
       setMetricData(null)
       setMetricRelationships([])
@@ -224,36 +214,31 @@ export function InfoSidebar() {
     }
   }
 
-  const fetchCityVideos = async (city: string) => {
-    try {
-      const response = await fetch(`/api/cities/${encodeURIComponent(city)}/videos?limit=5`)
-      const result = await response.json()
-      if (result.success) {
-        setCityVideos(result.data)
-      }
-    } catch (error) {
-      console.error('Error fetching city videos:', error)
-      setCityVideos([])
-    }
-  }
-
   const fetchCityDetails = async (city: string) => {
+    // Abort a superseded in-flight request and clear the PREVIOUS city's details right
+    // away — otherwise switching cities briefly showed the old city's rankings/insights,
+    // and a slow old response could land after (and overwrite) the new city's data.
+    cityDetailsAbortRef.current?.abort()
+    const ctrl = new AbortController()
+    cityDetailsAbortRef.current = ctrl
+    setCityDetails(null)
     setCityDetailsLoading(true)
     try {
-      const response = await fetch(`/api/cities/${encodeURIComponent(city)}/details`)
+      const response = await fetch(`/api/cities/${encodeURIComponent(city)}/details`, { signal: ctrl.signal })
       const result = await response.json()
-      console.log('City details API response:', { city, success: result.success, data: result.data })
+      if (ctrl.signal.aborted) return
       if (result.success && result.data) {
         setCityDetails(result.data)
       } else {
         console.warn('City details API returned unsuccessful or no data:', result)
         setCityDetails(null)
       }
-    } catch (error) {
+    } catch (error: any) {
+      if (error?.name === 'AbortError') return
       console.error('Error fetching city details:', error)
       setCityDetails(null)
     } finally {
-      setCityDetailsLoading(false)
+      if (!ctrl.signal.aborted) setCityDetailsLoading(false)
     }
   }
 
@@ -1273,7 +1258,7 @@ export function InfoSidebar() {
           </Drawer>
 
           {/* Top Insights */}
-          {filteredCityData.insights && filteredCityData.insights.filter((i: CityInsight) => i.category !== 'meta').length > 0 && (
+          {cityInsights && cityInsights.filter((i: CityInsight) => i.category !== 'meta').length > 0 && (
             <Card>
               <CardHeader>
                 <CardTitle className="text-sm flex items-center gap-2">
@@ -1282,7 +1267,7 @@ export function InfoSidebar() {
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-2">
-                {filteredCityData.insights
+                {cityInsights
                   .filter((insight: CityInsight) => insight.category !== 'meta')
                   .sort((a: CityInsight, b: CityInsight) => b.relevance_score - a.relevance_score)
                   .slice(0, 4)
@@ -1499,7 +1484,7 @@ export function InfoSidebar() {
               </div>
               {cityVideos.length > 0 ? (
                 <div className="space-y-1">
-                  {cityVideos.map((video, index) => (
+                  {cityVideos.slice(0, 5).map((video, index) => (
                     <Button
                       key={video.id}
                       variant="ghost"

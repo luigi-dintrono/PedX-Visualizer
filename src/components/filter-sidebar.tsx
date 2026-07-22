@@ -20,7 +20,7 @@ import {
   Clock,
   Move
 } from "lucide-react"
-import { useState } from "react"
+import { useState, useMemo } from "react"
 
 import {
   Sidebar,
@@ -145,46 +145,24 @@ export function FilterSidebar() {
   // }
 
 
-  // Get unique cities from the data, excluding cities with 0 videos or 0 pedestrians
-  const uniqueCities = Array.from(
+  // Unique cities with data (>0 videos and pedestrians), memoized: this Set/sort over all
+  // cities used to run on EVERY render (each slider tick), with an O(n²) indexOf debug log.
+  const uniqueCities = useMemo(() => Array.from(
     new Set(
       cityData
         .filter(city => {
           // Handle both string and number types from database (Neon returns strings, local PG returns numbers)
-          const videos = typeof city.total_videos === 'string' 
-            ? parseInt(city.total_videos) 
+          const videos = typeof city.total_videos === 'string'
+            ? parseInt(city.total_videos)
             : (typeof city.total_videos === 'number' ? city.total_videos : 0);
-          const pedestrians = typeof city.total_pedestrians === 'string' 
-            ? parseInt(city.total_pedestrians) 
+          const pedestrians = typeof city.total_pedestrians === 'string'
+            ? parseInt(city.total_pedestrians)
             : (typeof city.total_pedestrians === 'number' ? city.total_pedestrians : 0);
-          
-          const hasData = !isNaN(videos) && videos > 0 && !isNaN(pedestrians) && pedestrians > 0;
-          
-          // Debug log for first few cities
-          if (cityData.indexOf(city) < 3) {
-            console.log('[FilterSidebar] City filter check:', {
-              city: city.city,
-              total_videos: city.total_videos,
-              total_videos_type: typeof city.total_videos,
-              parsed_videos: videos,
-              total_pedestrians: city.total_pedestrians,
-              total_pedestrians_type: typeof city.total_pedestrians,
-              parsed_pedestrians: pedestrians,
-              hasData
-            });
-          }
-          
-          return hasData;
+          return !isNaN(videos) && videos > 0 && !isNaN(pedestrians) && pedestrians > 0;
         })
         .map(city => city.city)
     )
-  ).sort()
-  
-  // Log total cities for debugging
-  if (cityData.length > 0) {
-    console.log('[FilterSidebar] Total cities in cityData:', cityData.length);
-    console.log('[FilterSidebar] Cities after filtering:', uniqueCities.length);
-  }
+  ).sort(), [cityData])
 
   const handleCitySelect = (cityName: string) => {
     const newSelectedCity = cityName === "all" ? null : cityName

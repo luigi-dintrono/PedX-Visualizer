@@ -1057,9 +1057,30 @@ END;
 $$ LANGUAGE plpgsql;
 
 -- Function to refresh materialized views
+-- Materialized snapshot of v_city_summary — the hot read model behind /api/data (every
+-- globe heatmap paint) and /api/cities (every page load). The plain view is kept as the
+-- single source of truth for the aggregation; this MV is refreshed after every import
+-- (scripts/migrate-materialize-city-summary.sql).
+DROP MATERIALIZED VIEW IF EXISTS mv_city_summary;
+CREATE MATERIALIZED VIEW mv_city_summary AS
+SELECT * FROM v_city_summary;
+
+CREATE UNIQUE INDEX idx_mv_city_summary_id ON mv_city_summary(id);
+CREATE INDEX idx_mv_city_summary_city ON mv_city_summary(city);
+CREATE INDEX idx_mv_city_summary_continent ON mv_city_summary(continent);
+CREATE INDEX idx_mv_city_summary_coords ON mv_city_summary(latitude, longitude)
+  WHERE latitude IS NOT NULL AND longitude IS NOT NULL;
+
 CREATE OR REPLACE FUNCTION refresh_materialized_views()
 RETURNS VOID AS $$
 BEGIN
+    -- Concurrent refresh keeps /api/data and /api/cities readable during the refresh;
+    -- falls back to a plain refresh (e.g. right after creation).
+    BEGIN
+        REFRESH MATERIALIZED VIEW CONCURRENTLY mv_city_summary;
+    EXCEPTION WHEN OTHERS THEN
+        REFRESH MATERIALIZED VIEW mv_city_summary;
+    END;
     REFRESH MATERIALIZED VIEW mv_rank_crossing_speed;
     REFRESH MATERIALIZED VIEW mv_global_insights;
     REFRESH MATERIALIZED VIEW mv_city_insights;

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useCallback, useMemo } from 'react';
 import { useFilter } from '@/contexts/FilterContext';
-import { CityGlobeData } from '@/types/database';
+import { CityGlobeData, CityVideo } from '@/types/database';
 import type * as Cesium from 'cesium';
 
 declare global {
@@ -169,6 +169,42 @@ const METRIC_CONFIG = {
   },
 } as const;
 
+// ---------------------------------------------------------------------------
+// Canvas caches. The heatmap used to allocate a fresh 256×256 gradient canvas +
+// 20×20 dot canvas PER CITY on EVERY repaint (~1,200 canvases + ~600 GPU texture
+// uploads each filter/metric change). Colors are quantized to 32 levels per
+// channel so cities with near-identical colors share one canvas/texture, and the
+// caches persist across repaints. Bounded: ≤32⁴ keys in theory, ~dozens in practice.
+const CANVAS_COLOR_LEVELS = 32;
+
+function quantizeColorKey(color: any): string {
+  const q = (c: number) =>
+    Math.round(Math.max(0, Math.min(1, isNaN(c) ? 0 : c)) * (CANVAS_COLOR_LEVELS - 1));
+  return `${q(color?.red ?? 0)}-${q(color?.green ?? 0)}-${q(color?.blue ?? 0)}-${q(color?.alpha ?? 0.5)}`;
+}
+
+const gradientCanvasCache = new Map<string, HTMLCanvasElement>();
+function getGradientCanvas(color: any): HTMLCanvasElement {
+  const key = quantizeColorKey(color);
+  let canvas = gradientCanvasCache.get(key);
+  if (!canvas) {
+    canvas = createRadialGradientCanvas(color);
+    gradientCanvasCache.set(key, canvas);
+  }
+  return canvas;
+}
+
+const dotCanvasCache = new Map<string, HTMLCanvasElement>();
+function getDotCanvas(color: any): HTMLCanvasElement {
+  const key = quantizeColorKey(color);
+  let canvas = dotCanvasCache.get(key);
+  if (!canvas) {
+    canvas = createDotCanvas(color);
+    dotCanvasCache.set(key, canvas);
+  }
+  return canvas;
+}
+
 // Helper function to create radial gradient canvas for heatmap effect
 function createRadialGradientCanvas(color: any): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
@@ -279,33 +315,8 @@ function createCandidateDotCanvas(): HTMLCanvasElement {
   return canvas;
 }
 
-// One ranked candidate location the monocular-OSM localization considered.
-interface LocalizationCandidate {
-  rank: number;
-  latitude: number;
-  longitude: number;
-  street_names: string[];
-  support: number;
-  google_maps_url: string;
-}
-
-interface VideoData {
-  id: number;
-  video_name: string;
-  link: string;
-  latitude: number | null;
-  longitude: number | null;
-  city_latitude: number | null;
-  city_longitude: number | null;
-  // Localization provenance (real coords from PedX-Insight; null when mock/fallback)
-  localization_confidence: string | null;
-  street_name: string | null;
-  localization_status: string | null;
-  // Richer localization: uncertainty radius (m) + ranked candidate locations
-  localization_spread_m: number | null;
-  localization_candidates: LocalizationCandidate[] | null;
-  risky_crossing_ratio: number | null;
-}
+// Video rows come from FilterContext.cityVideos (shared fetch with InfoSidebar).
+type VideoData = CityVideo;
 
 export default function Globe() {
   const cesiumContainer = useRef<HTMLDivElement>(null);
@@ -315,6 +326,10 @@ export default function Globe() {
   // Holds the hover/click handler registered by createHeatmap so it can be
   // destroyed before a new one is created (otherwise handlers leak and stack).
   const heatmapHandlerRef = useRef<Cesium.ScreenSpaceEventHandler | null>(null);
+  // Entity whose label is currently shown on hover. Lets the mousemove handler toggle
+  // exactly two labels (previous off, new on) instead of scanning all ~600 entities and
+  // writing label.show on each — that scan ran ~60×/s and invalidated the scene constantly.
+  const hoveredEntityRef = useRef<Cesium.Entity | null>(null);
   // Refs mirroring the latest values used by the one-time init effect's
   // morphComplete listener, so it rebuilds with current (not stale) state.
   const selectedMetricsRef = useRef<string[]>([]);
@@ -335,8 +350,16 @@ export default function Globe() {
     granularFilters,
     filteredCityData,
     cityData,
+    cityVideos,
     setSelectedCity,
   } = useFilter();
+
+  // /api/data response cache + in-flight abort. The response is metric-agnostic (it
+  // carries ALL paintable columns), so switching the selected metric repaints from this
+  // cache with zero network; only real filter changes refetch. The AbortController
+  // cancels a superseded in-flight request instead of letting it complete server-side.
+  const globalDataCacheRef = useRef<{ key: string; data: CityGlobeData[] } | null>(null);
+  const globalDataAbortRef = useRef<AbortController | null>(null);
 
   // Create a stable reference for vehicle filters to ensure useEffect detects changes
   // Convert arrays to strings for reliable change detection
@@ -384,27 +407,7 @@ export default function Globe() {
     ]
   );
 
-  // Fetch videos for selected city
-  const fetchCityVideos = useCallback(async (cityName: string): Promise<VideoData[]> => {
-    try {
-      const response = await fetch(`/api/cities/${encodeURIComponent(cityName)}/videos?limit=100`);
-      const result = await response.json();
-      console.log(`[Globe] Fetched videos for ${cityName}:`, result);
-      if (result.success && result.data) {
-        const videosWithCoords = result.data.filter((v: VideoData) => {
-          const lat = v.latitude ?? v.city_latitude;
-          const lng = v.longitude ?? v.city_longitude;
-          return lat !== null && lng !== null && !isNaN(lat) && !isNaN(lng);
-        });
-        console.log(`[Globe] Videos with coordinates: ${videosWithCoords.length}/${result.data.length}`);
-        return result.data;
-      }
-      return [];
-    } catch (error) {
-      console.error('Error fetching city videos:', error);
-      return [];
-    }
-  }, []);
+  // (City videos now come from FilterContext.cityVideos — one shared, abortable fetch.)
 
   // Fetch global data for heatmap with filters
   const fetchGlobalData = useCallback(async (): Promise<CityGlobeData[]> => {
@@ -493,47 +496,62 @@ export default function Globe() {
         params.append('suitcase', 'true');
       }
 
-      // Vehicle count filters - always send the current values
-      params.append('minCar', granularFilters.car[0].toString());
-      params.append('maxCar', granularFilters.car[1].toString());
-      
-      params.append('minBus', granularFilters.bus[0].toString());
-      params.append('maxBus', granularFilters.bus[1].toString());
-      
-      params.append('minTruck', granularFilters.truck[0].toString());
-      params.append('maxTruck', granularFilters.truck[1].toString());
-      
-      params.append('minMotorbike', granularFilters.motorbike[0].toString());
-      params.append('maxMotorbike', granularFilters.motorbike[1].toString());
-      
-      params.append('minBicycle', granularFilters.bicycle[0].toString());
-      params.append('maxBicycle', granularFilters.bicycle[1].toString());
-      
-      console.log('[Globe] Vehicle filters:', {
-        car: granularFilters.car,
-        bus: granularFilters.bus,
-        truck: granularFilters.truck,
-        motorbike: granularFilters.motorbike,
-        bicycle: granularFilters.bicycle
-      });
-      
+      // Vehicle count filters — only sent when the user actually narrowed a range.
+      // Sending them unconditionally forced /api/data onto its expensive
+      // cities×videos×pedestrians CTE path on EVERY heatmap repaint, even with all
+      // sliders at their defaults; omitting default ranges lets the API use the cheap
+      // v_city_summary path. Ranges must match DEFAULT ranges in FilterContext.tsx.
+      const vehicleDefaults: Record<string, [number, number]> = {
+        Car: [0, 500],
+        Bus: [0, 100],
+        Truck: [0, 100],
+        Motorbike: [0, 200],
+        Bicycle: [0, 300],
+      };
+      const vehicleValues: Record<string, [number, number]> = {
+        Car: granularFilters.car,
+        Bus: granularFilters.bus,
+        Truck: granularFilters.truck,
+        Motorbike: granularFilters.motorbike,
+        Bicycle: granularFilters.bicycle,
+      };
+      for (const [name, [min, max]] of Object.entries(vehicleValues)) {
+        const [defMin, defMax] = vehicleDefaults[name];
+        if (min !== defMin || max !== defMax) {
+          params.append(`min${name}`, min.toString());
+          params.append(`max${name}`, max.toString());
+        }
+      }
+
+
       // Add limit parameter to fetch more cities (increased from default 100)
       params.append('limit', '1000');
-      
+
       const queryString = params.toString();
       const url = `/api/data?${queryString}`;
-      
-      const response = await fetch(url);
+
+      // Same filter set as the last successful fetch → repaint from cache (this is
+      // every metric switch, since the response carries all paintable columns).
+      if (globalDataCacheRef.current?.key === queryString) {
+        return globalDataCacheRef.current.data;
+      }
+
+      // Cancel a superseded in-flight request before starting the new one.
+      globalDataAbortRef.current?.abort();
+      const ctrl = new AbortController();
+      globalDataAbortRef.current = ctrl;
+
+      const response = await fetch(url, { signal: ctrl.signal });
       const result = await response.json();
-      console.log('[Globe] fetchGlobalData response:', {
-        url: url,
-        success: result.success,
-        count: result.count,
-        dataLength: result.data?.length
-      });
-      return result.success ? result.data : [];
-    } catch (error) {
-      console.error('Error fetching global data:', error);
+      if (result.success) {
+        globalDataCacheRef.current = { key: queryString, data: result.data };
+        return result.data;
+      }
+      return [];
+    } catch (error: any) {
+      if (error?.name !== 'AbortError') {
+        console.error('Error fetching global data:', error);
+      }
       return [];
     }
   }, [
@@ -627,14 +645,20 @@ export default function Globe() {
 
     const viewer = viewerRef.current;
     
-    // Remove existing data source
-    if (dataSourceRef.current) {
-      viewer.dataSources.remove(dataSourceRef.current);
+    // Reuse the existing datasource and update entities IN PLACE. Tearing down and
+    // recreating ~600 entities (each with fresh canvases + GPU texture uploads) on every
+    // filter/metric change was a major repaint cost; now an entity's material/billboard
+    // only changes when its quantized color actually changed.
+    let dataSource = dataSourceRef.current as Cesium.CustomDataSource | null;
+    if (!dataSource) {
+      dataSource = new Cesium.CustomDataSource('heatmap');
+      dataSourceRef.current = dataSource;
+      // Attach IMMEDIATELY (an empty attached datasource is harmless). Attaching only at
+      // the end of a successful paint orphaned the ref when the first paint early-returned
+      // (e.g. a sparse metric with no valid values): every later paint then wrote entities
+      // into a datasource the viewer never rendered, blanking the heatmap permanently.
+      viewer.dataSources.add(dataSource);
     }
-
-    // Create new data source
-    const dataSource = new Cesium.CustomDataSource('heatmap');
-    dataSourceRef.current = dataSource;
 
     const config = METRIC_CONFIG[metricType as keyof typeof METRIC_CONFIG];
     if (!config) return;
@@ -651,28 +675,68 @@ export default function Globe() {
              value !== null && !isNaN(value);
     });
 
-    if (validData.length === 0) return;
+    // No paintable cities (e.g. a metric with no data under the current filters):
+    // clear any stale entities from the previous paint, matching the old
+    // teardown-and-rebuild behavior, instead of leaving the last heatmap up.
+    const clearAll = () => {
+      if (dataSource!.entities.values.length > 0) {
+        dataSource!.entities.removeAll();
+        hoveredEntityRef.current = null;
+        viewer.scene.requestRender();
+      }
+    };
+
+    if (validData.length === 0) {
+      clearAll();
+      return;
+    }
 
     // Calculate min/max values for color scaling
     const values = validData.map(item => {
       const rawValue = (item as any)[config.property];
       return typeof rawValue === 'string' ? parseFloat(rawValue) : rawValue;
     }).filter(v => v !== null && !isNaN(v));
-    
-    if (values.length === 0) return;
+
+    if (values.length === 0) {
+      clearAll();
+      return;
+    }
     
     const minValue = Math.min(...values);
     const maxValue = Math.max(...values);
 
-    // Create entities for each data point
+    // Billboard/label settings depend on the scene mode (the morphComplete handler adjusts
+    // EXISTING entities on morph; entities created while already in 2D must match).
+    const is2D = viewer.scene.mode === Cesium.SceneMode.SCENE2D;
+    const billboardHeightReference = new Cesium.ConstantProperty(
+      is2D ? Cesium.HeightReference.NONE : Cesium.HeightReference.RELATIVE_TO_GROUND
+    );
+    const billboardEyeOffset = is2D
+      ? new Cesium.Cartesian3(0, 0, 0)
+      : new Cesium.Cartesian3(0, 0, -5000);
+    const depthTestDistance = is2D ? Number.POSITIVE_INFINITY : 1000000;
+
+    // Create or update one entity per city. Batch all mutations between
+    // suspendEvents/resumeEvents so Cesium coalesces the change notifications.
+    const entities = dataSource.entities;
+    entities.suspendEvents();
+    const seenIds = new Set<string>();
+
+    const num = (v: unknown): number | null => {
+      if (v === null || v === undefined) return null;
+      const n = typeof v === 'string' ? parseFloat(v) : (v as number);
+      return isNaN(n) ? null : n;
+    };
+
     validData.forEach(item => {
       const rawValue = (item as any)[config.property];
       const value = typeof rawValue === 'string' ? parseFloat(rawValue) : rawValue;
       const color = getColorForMetric(value, metricType, minValue, maxValue, Cesium);
-      
+      const colorKey = quantizeColorKey(color);
+
       // Scale ellipse size based on city population (or default if not available)
       const population = typeof item.population === 'string' ? parseFloat(item.population) : item.population;
-      
+
       // Calculate radius in meters based on population
       // Formula: sqrt(population / π) with scaling factor for visibility
       let radiusMeters = 5000; // Default 5km for unknown population
@@ -681,14 +745,64 @@ export default function Globe() {
         radiusMeters = Math.sqrt(population / Math.PI) * 3;
         radiusMeters = Math.max(3000, Math.min(radiusMeters, 50000)); // Clamp between 3-50km
       }
-      
+
       // Intensity-based size modifier (higher values = slightly larger)
       const normalizedValue = (value - minValue) / (maxValue - minValue);
       const intensityMultiplier = 0.8 + (normalizedValue * 0.4); // 0.8 to 1.2 range
       radiusMeters *= intensityMultiplier;
 
+      // Hover card: the selected metric plus the other columns /api/data serves
+      // (population, sample sizes, age, speed, WHO-style traffic mortality).
+      const totalVideos = num(item.total_videos);
+      const totalPeds = num(item.total_pedestrians);
+      const avgAge = num(item.avg_pedestrian_age);
+      const speed = num(item.avg_crossing_speed);
+      const mortality = num(item.traffic_mortality);
+      const contextLine = [
+        avgAge != null ? `avg age ${avgAge.toFixed(1)}` : null,
+        speed != null ? `crossing speed ${speed.toFixed(2)} m/s` : null,
+      ].filter(Boolean).join(' · ');
+      const labelText = [
+        `${item.city}, ${item.country}`,
+        `${config.name}: ${value?.toFixed(2)} ${config.unit}`,
+        population ? `Population: ${population.toLocaleString()}` : null,
+        totalVideos != null && totalPeds != null
+          ? `Sample: ${totalVideos} video${totalVideos === 1 ? '' : 's'} · ${totalPeds.toLocaleString()} pedestrians`
+          : null,
+        contextLine || null,
+        mortality != null ? `Traffic mortality: ${mortality.toFixed(1)} per 100k` : null,
+      ].filter(Boolean).join('\n');
+
+      const entityId = `heatmap-${item.id}`;
+      seenIds.add(entityId);
+      const existing = entities.getById(entityId);
+
+      if (existing) {
+        // Update in place; touch the GPU-backed material/billboard only on a real
+        // color change, and the ellipse axes only on a real radius change.
+        const props: any = existing.properties;
+        if (props?.colorKey?.getValue() !== colorKey) {
+          existing.ellipse!.material = new Cesium.ImageMaterialProperty({
+            image: getGradientCanvas(color),
+            transparent: true,
+          }) as any;
+          (existing.billboard as any).image = getDotCanvas(color);
+          props.colorKey = colorKey;
+        }
+        if (props?.radiusMeters?.getValue() !== radiusMeters) {
+          (existing.ellipse as any).semiMinorAxis = radiusMeters;
+          (existing.ellipse as any).semiMajorAxis = radiusMeters;
+          props.radiusMeters = radiusMeters;
+        }
+        (existing.label as any).text = labelText;
+        props.metricValue = value;
+        props.metricType = metricType;
+        return;
+      }
+
       // Create main ellipse (city coverage area)
-      const entity = dataSource.entities.add({
+      entities.add({
+        id: entityId,
         position: Cesium.Cartesian3.fromDegrees(
           typeof item.longitude === 'string' ? parseFloat(item.longitude) : item.longitude!,
           typeof item.latitude === 'string' ? parseFloat(item.latitude) : item.latitude!,
@@ -698,7 +812,7 @@ export default function Globe() {
           semiMinorAxis: radiusMeters,
           semiMajorAxis: radiusMeters,
           material: new Cesium.ImageMaterialProperty({
-            image: createRadialGradientCanvas(color),
+            image: getGradientCanvas(color),
             transparent: true,
           }),
           heightReference: new Cesium.ConstantProperty(Cesium.HeightReference.CLAMP_TO_GROUND),
@@ -706,17 +820,17 @@ export default function Globe() {
         },
         // Central marker (billboard) for better visibility and to avoid terrain clipping
         billboard: {
-          image: createDotCanvas(color),
+          image: getDotCanvas(color),
           scale: 1.0,
-          heightReference: new Cesium.ConstantProperty(Cesium.HeightReference.RELATIVE_TO_GROUND),
+          heightReference: billboardHeightReference,
           // Pull forward in eye space to avoid local terrain clipping while still occluding behind globe
-          eyeOffset: new Cesium.Cartesian3(0, 0, -5000),
-          disableDepthTestDistance: 1000000,
+          eyeOffset: billboardEyeOffset,
+          disableDepthTestDistance: depthTestDistance,
           verticalOrigin: Cesium.VerticalOrigin.CENTER,
           horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
         },
         label: {
-          text: `${item.city}, ${item.country}\n${config.name}: ${value?.toFixed(2)} ${config.unit}\nPopulation: ${population ? population.toLocaleString() : 'N/A'}`,
+          text: labelText,
           font: '14pt sans-serif',
           fillColor: Cesium.Color.WHITE,
           outlineColor: Cesium.Color.BLACK,
@@ -725,7 +839,7 @@ export default function Globe() {
           pixelOffset: new Cesium.Cartesian2(0, -60),
           show: false, // Hide by default, show on hover
           // Keep labels readable when in front hemisphere, but not through the back side of the globe
-          disableDepthTestDistance: 1000000,
+          disableDepthTestDistance: depthTestDistance,
           backgroundColor: Cesium.Color.BLACK.withAlpha(0.7),
           showBackground: true,
           backgroundPadding: new Cesium.Cartesian2(8, 4),
@@ -736,12 +850,21 @@ export default function Globe() {
           metricValue: value,
           metricType: metricType,
           radiusMeters: radiusMeters,
+          colorKey: colorKey,
         }
       });
     });
 
-    // Add data source to viewer
-    viewer.dataSources.add(dataSource);
+    // Drop entities for cities filtered out of this repaint.
+    const toRemove = entities.values.filter(e => !seenIds.has(e.id as string));
+    toRemove.forEach(e => entities.remove(e));
+    if (hoveredEntityRef.current && toRemove.includes(hoveredEntityRef.current)) {
+      hoveredEntityRef.current = null;
+    }
+
+    entities.resumeEvents();
+    // requestRenderMode: paint the updated heatmap now (datasource was attached on creation).
+    viewer.scene.requestRender();
 
     // Remove any previously-registered hover/click handler before creating a new
     // one. createHeatmap runs on every metric/filter change, so without this the
@@ -757,27 +880,19 @@ export default function Globe() {
 
     handler.setInputAction((event: any) => {
       const pickedObject = viewer.scene.pick(event.endPosition);
-      
-      // Hide all city/heatmap labels first
-      dataSource.entities.values.forEach(entity => {
-        if (entity.label) {
-          (entity.label.show as any) = false;
-        }
-      });
+      const pickedEntity: Cesium.Entity | null =
+        Cesium.defined(pickedObject) && pickedObject.id && pickedObject.id.label
+          ? pickedObject.id
+          : null;
 
-      // Hide all video labels
-      if (videoDataSourceRef.current) {
-        videoDataSourceRef.current.entities.values.forEach(entity => {
-          if (entity.label) {
-            (entity.label.show as any) = false;
-          }
-        });
-      }
-
-      // Show label for hovered entity (city or video)
-      if (Cesium.defined(pickedObject) && pickedObject.id && pickedObject.id.label) {
-        (pickedObject.id.label.show as any) = true;
-      }
+      // Only two labels can ever change per move: the previously hovered one and the new
+      // one. Skip all work (and re-renders) while hovering the same entity or empty space.
+      const prev = hoveredEntityRef.current;
+      if (prev === pickedEntity) return;
+      if (prev && prev.label) (prev.label.show as any) = false;
+      if (pickedEntity && pickedEntity.label) (pickedEntity.label.show as any) = true;
+      hoveredEntityRef.current = pickedEntity;
+      viewer.scene.requestRender();
     }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
 
     // Add click handler to select city or open video
@@ -823,35 +938,15 @@ export default function Globe() {
     videos: VideoData[],
     Cesium: typeof import('cesium')
   ) => {
-    console.log('[Globe] createVideoMarkers called with', videos.length, 'videos');
-    
     if (!viewerRef.current) {
       console.warn('[Globe] Viewer not ready');
       return;
     }
 
-    if (!videos.length) {
-      console.log('[Globe] No videos provided, clearing markers');
-      // Remove existing video data source if no videos
-      if (videoDataSourceRef.current && viewerRef.current) {
-        viewerRef.current.dataSources.remove(videoDataSourceRef.current);
-        videoDataSourceRef.current = null;
-      }
-      return;
-    }
-
     const viewer = viewerRef.current;
 
-    // Remove existing video data source
-    if (videoDataSourceRef.current) {
-      viewer.dataSources.remove(videoDataSourceRef.current);
-    }
-
-    // Create new data source for videos
-    const videoDataSource = new Cesium.CustomDataSource('videos');
-    videoDataSourceRef.current = videoDataSource;
-
-    // Filter videos that have coordinates (either video-specific or city fallback)
+    // Filter videos that have coordinates (either video-specific or city fallback) BEFORE
+    // touching the datasource, so the empty cases share one clear-and-repaint path.
     const videosWithCoords = videos.filter(video => {
       const lat = video.latitude ?? video.city_latitude;
       const lng = video.longitude ?? video.city_longitude;
@@ -862,12 +957,35 @@ export default function Globe() {
       return hasCoords;
     });
 
-    console.log(`[Globe] Creating markers for ${videosWithCoords.length} videos with coordinates`);
-
     if (videosWithCoords.length === 0) {
-      console.warn('[Globe] No videos with coordinates found');
+      // No markers to paint: remove any existing ones and repaint (requestRenderMode),
+      // leaving the ref null rather than pointing at a never-attached datasource.
+      if (videoDataSourceRef.current) {
+        viewer.dataSources.remove(videoDataSourceRef.current);
+        videoDataSourceRef.current = null;
+        viewer.scene.requestRender();
+      }
       return;
     }
+
+    // Remove existing video data source
+    if (videoDataSourceRef.current) {
+      viewer.dataSources.remove(videoDataSourceRef.current);
+    }
+
+    // Create new data source for videos
+    const videoDataSource = new Cesium.CustomDataSource('videos');
+    videoDataSourceRef.current = videoDataSource;
+
+    // Match the current scene mode at creation time (morphComplete only adjusts on morph).
+    const is2D = viewer.scene.mode === Cesium.SceneMode.SCENE2D;
+    const markerHeightReference = new Cesium.ConstantProperty(
+      is2D ? Cesium.HeightReference.NONE : Cesium.HeightReference.RELATIVE_TO_GROUND
+    );
+    const markerEyeOffset = is2D
+      ? new Cesium.Cartesian3(0, 0, 0)
+      : new Cesium.Cartesian3(0, 0, -1000);
+    const markerDepthTestDistance = is2D ? Number.POSITIVE_INFINITY : 1000000;
 
     // Create markers for each video
     videosWithCoords.forEach((video, index) => {
@@ -882,8 +1000,6 @@ export default function Globe() {
         return;
       }
 
-      console.log(`[Globe] Creating marker ${index + 1}/${videosWithCoords.length} for ${video.video_name} at (${latNum}, ${lngNum})`);
-
       const entity = videoDataSource.entities.add({
         position: Cesium.Cartesian3.fromDegrees(
           lngNum,
@@ -893,9 +1009,9 @@ export default function Globe() {
         billboard: {
           image: createVideoDotCanvas(),
           scale: 1.0,
-          heightReference: new Cesium.ConstantProperty(Cesium.HeightReference.RELATIVE_TO_GROUND),
-          eyeOffset: new Cesium.Cartesian3(0, 0, -1000),
-          disableDepthTestDistance: 1000000,
+          heightReference: markerHeightReference,
+          eyeOffset: markerEyeOffset,
+          disableDepthTestDistance: markerDepthTestDistance,
           verticalOrigin: Cesium.VerticalOrigin.CENTER,
           horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
         },
@@ -926,7 +1042,7 @@ export default function Globe() {
           style: Cesium.LabelStyle.FILL_AND_OUTLINE,
           pixelOffset: new Cesium.Cartesian2(0, -40),
           show: false, // Hide by default, show on hover
-          disableDepthTestDistance: 1000000,
+          disableDepthTestDistance: markerDepthTestDistance,
           backgroundColor: Cesium.Color.BLACK.withAlpha(0.7),
           showBackground: true,
           backgroundPadding: new Cesium.Cartesian2(8, 4),
@@ -985,8 +1101,8 @@ export default function Globe() {
               billboard: {
                 image: createCandidateDotCanvas(),
                 scale: 1.0,
-                heightReference: new Cesium.ConstantProperty(Cesium.HeightReference.RELATIVE_TO_GROUND),
-                disableDepthTestDistance: 1000000,
+                heightReference: markerHeightReference,
+                disableDepthTestDistance: markerDepthTestDistance,
                 verticalOrigin: Cesium.VerticalOrigin.CENTER,
                 horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
               },
@@ -1004,7 +1120,7 @@ export default function Globe() {
                 style: Cesium.LabelStyle.FILL_AND_OUTLINE,
                 pixelOffset: new Cesium.Cartesian2(0, -28),
                 show: false,
-                disableDepthTestDistance: 1000000,
+                disableDepthTestDistance: markerDepthTestDistance,
                 backgroundColor: Cesium.Color.BLACK.withAlpha(0.7),
                 showBackground: true,
                 backgroundPadding: new Cesium.Cartesian2(8, 4),
@@ -1020,7 +1136,8 @@ export default function Globe() {
 
     // Add data source to viewer
     viewer.dataSources.add(videoDataSource);
-    console.log(`[Globe] Added ${videosWithCoords.length} video markers to globe`);
+    // requestRenderMode: paint the new markers now.
+    viewer.scene.requestRender();
 
     // Note: Hover effects and click handlers are handled by the existing handler in createHeatmap
     // Video markers will work with the same handlers since they're in a separate data source
@@ -1068,7 +1185,6 @@ export default function Globe() {
       altitude = Math.max(10000, Math.min(altitude, 80000));
     }
 
-    console.log(`Zooming to ${cityName}: lat=${lat}, lng=${lng}, altitude=${altitude}`);
 
     // Calculate offset to compensate for pitch angle
     // When camera is tilted at -45°, the center of view is actually SOUTH of target
@@ -1086,7 +1202,6 @@ export default function Globe() {
     // Adjust target latitude SOUTH to account for viewing angle
     const adjustedLat = lat - latOffsetDegrees;
 
-    console.log(`Adjusted coordinates: original lat=${lat}, adjusted lat=${adjustedLat}, offset=${latOffsetDegrees}`);
 
     // Fly to the city with centered view
     viewer.camera.flyTo({
@@ -1141,6 +1256,13 @@ export default function Globe() {
 
       const viewer = new Cesium.Viewer(cesiumContainer.current, {
         terrain: Cesium.Terrain.fromWorldTerrain(),
+        // Render on demand instead of continuously. Without this Cesium redraws the whole
+        // scene (terrain + OSM buildings + ~600 textured entities) at display refresh rate
+        // forever, pegging the GPU and making the entire app feel sluggish. Camera moves,
+        // tile loads and dataSource changes request frames automatically; our own
+        // programmatic changes call scene.requestRender() explicitly.
+        requestRenderMode: true,
+        maximumRenderTimeChange: Infinity,
         homeButton: true,
         // Use built-in SceneModePicker UI
         sceneModePicker: true,
@@ -1378,6 +1500,8 @@ export default function Globe() {
       if (dataSourceRef.current && viewerRef.current) {
         viewerRef.current.dataSources.remove(dataSourceRef.current);
         dataSourceRef.current = null;
+        hoveredEntityRef.current = null;
+        viewerRef.current.scene.requestRender();
       }
       return;
     }
@@ -1418,37 +1542,38 @@ export default function Globe() {
     setSelectedCity
   ]);
 
-  // Handle city selection changes and load video markers
+  // Zoom to the selected city (video markers are handled by the effect below,
+  // driven by the shared FilterContext.cityVideos fetch).
   useEffect(() => {
-    if (!viewerRef.current || !selectedCity) {
-      // Clear video markers when no city is selected
-      if (videoDataSourceRef.current && viewerRef.current) {
-        viewerRef.current.dataSources.remove(videoDataSourceRef.current);
-        videoDataSourceRef.current = null;
-      }
-      return;
-    }
+    if (!viewerRef.current || !selectedCity) return;
 
     let cancelled = false;
-    const handleCityZoomAndVideos = async () => {
+    (async () => {
       const Cesium = await loadCesium();
       if (cancelled) return;
-
-      // Zoom to city
       await zoomToCity(selectedCity, Cesium);
-      if (cancelled) return;
-
-      // Fetch and display video markers (guard against a stale city selection painting late)
-      const videos = await fetchCityVideos(selectedCity);
-      if (cancelled) return;
-      await createVideoMarkers(videos, Cesium);
-    };
-
-    handleCityZoomAndVideos();
+    })();
     return () => {
       cancelled = true;
     };
-  }, [selectedCity, zoomToCity, fetchCityVideos, createVideoMarkers]);
+  }, [selectedCity, zoomToCity]);
+
+  // Paint video markers whenever the shared city-videos data changes.
+  // Context sets cityVideos = [] when no city is selected, and
+  // createVideoMarkers([]) clears the marker datasource.
+  useEffect(() => {
+    if (!viewerRef.current) return;
+
+    let cancelled = false;
+    (async () => {
+      const Cesium = await loadCesium();
+      if (cancelled) return;
+      await createVideoMarkers(cityVideos, Cesium);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [cityVideos, createVideoMarkers]);
 
   // Listen for globe reset event
   useEffect(() => {

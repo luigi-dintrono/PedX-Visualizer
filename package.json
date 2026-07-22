@@ -24,7 +24,7 @@
     "gazetteer:generate": "node scripts/generate-city-gazetteer.js",
     "gazetteer:test": "node scripts/test-city-gazetteer.js",
     "db:migrate-insights-ext": "node scripts/run-sql.js scripts/migrate-extend-insights.sql",
-    "db:publish": "node scripts/aggregate-csv-data.js && node scripts/import-video-coordinates.js && node scripts/refresh-views.js && node scripts/generate-city-insights.js"
+    "db:publish": "node scripts/aggregate-csv-data.js && node scripts/import-video-coordinates.js && node scripts/refresh-views.js && node scripts/generate-city-insights.js && node scripts/refresh-views.js"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.16",

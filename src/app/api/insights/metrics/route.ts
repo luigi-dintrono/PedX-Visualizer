@@ -54,7 +54,22 @@ const METRICS: {
 
 export async function GET(request: NextRequest) {
   try {
-    const globalResult = await pool.query('SELECT * FROM mv_global_insights LIMIT 1');
+    // One concurrent batch instead of 1 + N sequential Neon round-trips (was ~600ms warm).
+    const [globalResult, ...extremesResults] = await Promise.all([
+      pool.query('SELECT * FROM mv_global_insights LIMIT 1'),
+      ...METRICS.map((m) =>
+        pool.query(
+          `WITH ranked AS (
+             SELECT city, country, ${m.cityColumn}::float AS value
+             FROM mv_city_insights
+             WHERE ${m.cityColumn} IS NOT NULL AND ${m.cityColumn} > 0
+           )
+           SELECT
+             (SELECT row_to_json(t) FROM (SELECT city, country, value FROM ranked ORDER BY value DESC LIMIT 1) t) AS top,
+             (SELECT row_to_json(t) FROM (SELECT city, country, value FROM ranked ORDER BY value ASC  LIMIT 1) t) AS bottom`
+        )
+      ),
+    ]);
     const global = globalResult.rows[0] || {};
 
     const num = (v: any): number => (v == null ? 0 : Number(v));
@@ -62,19 +77,8 @@ export async function GET(request: NextRequest) {
     const metrics: MetricInsight[] = [];
     for (let i = 0; i < METRICS.length; i++) {
       const m = METRICS[i];
-      // Top (highest) and bottom (lowest) city for this metric, non-null and non-zero.
-      const extremes = await pool.query(
-        `WITH ranked AS (
-           SELECT city, country, ${m.cityColumn}::float AS value
-           FROM mv_city_insights
-           WHERE ${m.cityColumn} IS NOT NULL AND ${m.cityColumn} > 0
-         )
-         SELECT
-           (SELECT row_to_json(t) FROM (SELECT city, country, value FROM ranked ORDER BY value DESC LIMIT 1) t) AS top,
-           (SELECT row_to_json(t) FROM (SELECT city, country, value FROM ranked ORDER BY value ASC  LIMIT 1) t) AS bottom`
-      );
-      const top = extremes.rows[0]?.top;
-      const bottom = extremes.rows[0]?.bottom;
+      const top = extremesResults[i].rows[0]?.top;
+      const bottom = extremesResults[i].rows[0]?.bottom;
       if (!top || !bottom) continue;
 
       metrics.push({

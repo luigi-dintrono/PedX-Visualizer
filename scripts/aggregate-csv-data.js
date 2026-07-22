@@ -1027,11 +1027,25 @@ async function main() {
             await geoNamesAPI.close();
         }
         
+        // Refresh the materialized views so the API serves the just-imported data.
+        // /api/data and /api/cities read mv_city_summary (a snapshot, not the live view),
+        // so skipping this would leave the app serving pre-import data even though the
+        // base tables changed. db:publish refreshes again later (after insights), which
+        // is cheap and harmless.
+        console.log('\n🔄 Refreshing materialized views...');
+        try {
+            await pool.query('SELECT refresh_materialized_views()');
+            console.log('✅ Materialized views refreshed');
+        } catch (error) {
+            console.error('❌ Materialized view refresh failed:', error.message);
+            console.error('   Run `npm run refresh-views` manually — the API serves stale data until then.');
+        }
+
         // Generate summary
         await aggregator.generateSummary();
-        
+
         console.log('Data aggregation completed successfully!');
-        
+
     } catch (error) {
         console.error('Aggregation failed:', error);
         process.exit(1);
