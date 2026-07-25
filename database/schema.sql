@@ -1155,17 +1155,20 @@ RETURNS TABLE (
 ) AS $$
 BEGIN
     RETURN QUERY
-    SELECT 
-        vs.city,
-        vs.country,
-        vs.continent,
-        vs.total_videos,
-        vs.total_pedestrians,
-        vs.avg_risky_crossing_ratio,
-        vs.avg_run_red_light_ratio,
-        vs.avg_crosswalk_usage_ratio,
-        vs.risk_intensity,
-        mv.crossing_speed_rank
+    -- Cast every column to its declared RETURNS TABLE type: v_city_summary.risk_intensity
+    -- is `double precision` but declared DECIMAL above, which made this function raise
+    -- 42804 on every call. See scripts/migrate-fix-plpgsql-result-types.sql.
+    SELECT
+        vs.city::VARCHAR(255),
+        vs.country::VARCHAR(255),
+        vs.continent::VARCHAR(255),
+        vs.total_videos::BIGINT,
+        vs.total_pedestrians::BIGINT,
+        vs.avg_risky_crossing_ratio::DECIMAL,
+        vs.avg_run_red_light_ratio::DECIMAL,
+        vs.avg_crosswalk_usage_ratio::DECIMAL,
+        vs.risk_intensity::DECIMAL,
+        mv.crossing_speed_rank::BIGINT
     FROM v_city_summary vs
     LEFT JOIN mv_rank_crossing_speed mv ON vs.id = mv.city_id
     WHERE vs.id = city_id_param;
@@ -1374,28 +1377,36 @@ RETURNS TABLE (
 BEGIN
     RETURN QUERY
     WITH current_data AS (
+        -- Both filters MUST be relation-qualified: `city` is also a RETURNS TABLE output
+        -- column, which PL/pgSQL puts in scope as a variable for the whole function body,
+        -- so a bare `city` here raises 42702 ("column reference is ambiguous") and the
+        -- function throws on every call. See scripts/migrate-fix-compare-ambiguous-city.sql.
         SELECT * FROM v_city_summary
-        WHERE (city_name_param IS NULL OR city = city_name_param)
+        WHERE (city_name_param IS NULL OR v_city_summary.city = city_name_param)
     ),
     historical_data AS (
-        SELECT * FROM v_city_summary_at_date(target_date)
-        WHERE (city_name_param IS NULL OR city = city_name_param)
+        SELECT * FROM v_city_summary_at_date(target_date) AS d
+        WHERE (city_name_param IS NULL OR d.city = city_name_param)
     )
-    SELECT 
-        COALESCE(c.city, h.city) as city,
-        COALESCE(c.country, h.country) as country,
-        c.total_videos as current_total_videos,
-        c.avg_risky_crossing_ratio as current_avg_risky_crossing,
-        c.avg_crossing_speed as current_avg_crossing_speed,
-        c.risky_crossing_rate as current_risky_crossing_rate,
-        h.total_videos as historical_total_videos,
-        h.avg_risky_crossing_ratio as historical_avg_risky_crossing,
-        h.avg_crossing_speed as historical_avg_crossing_speed,
-        h.risky_crossing_rate as historical_risky_crossing_rate,
-        (c.total_videos - COALESCE(h.total_videos, 0)) as video_count_change,
-        (c.avg_risky_crossing_ratio - COALESCE(h.avg_risky_crossing_ratio, 0)) as risky_crossing_change,
-        (c.avg_crossing_speed - COALESCE(h.avg_crossing_speed, 0)) as crossing_speed_change,
-        (CURRENT_DATE - target_date) as change_period_days
+    -- Every projected column is cast to its declared RETURNS TABLE type on purpose:
+    -- v_city_summary.risky_crossing_rate is `double precision` while the same column from
+    -- v_city_summary_at_date() is `numeric`, and without the cast PL/pgSQL raises 42804
+    -- ("structure of query does not match function result type").
+    SELECT
+        COALESCE(c.city, h.city)::VARCHAR                              as city,
+        COALESCE(c.country, h.country)::VARCHAR                        as country,
+        c.total_videos::BIGINT                                         as current_total_videos,
+        c.avg_risky_crossing_ratio::DECIMAL                            as current_avg_risky_crossing,
+        c.avg_crossing_speed::DECIMAL                                  as current_avg_crossing_speed,
+        c.risky_crossing_rate::DECIMAL                                 as current_risky_crossing_rate,
+        h.total_videos::BIGINT                                         as historical_total_videos,
+        h.avg_risky_crossing_ratio::DECIMAL                            as historical_avg_risky_crossing,
+        h.avg_crossing_speed::DECIMAL                                  as historical_avg_crossing_speed,
+        h.risky_crossing_rate::DECIMAL                                 as historical_risky_crossing_rate,
+        (c.total_videos - COALESCE(h.total_videos, 0))::BIGINT         as video_count_change,
+        (c.avg_risky_crossing_ratio - COALESCE(h.avg_risky_crossing_ratio, 0))::DECIMAL as risky_crossing_change,
+        (c.avg_crossing_speed - COALESCE(h.avg_crossing_speed, 0))::DECIMAL             as crossing_speed_change,
+        (CURRENT_DATE - target_date)::INTEGER                          as change_period_days
     FROM current_data c
     FULL OUTER JOIN historical_data h ON c.city = h.city AND c.country = h.country;
 END;
