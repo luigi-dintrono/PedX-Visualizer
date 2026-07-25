@@ -24,6 +24,9 @@ export async function GET(
         v.localization_status,
         v.localization_spread_m,
         v.localization_candidates,
+        v.localization_route,
+        v.localization_route_length_m,
+        v.localization_trajectory_source,
         v.risky_crossing_ratio,
         v.run_red_light_ratio,
         v.crosswalk_usage_ratio,
@@ -52,6 +55,11 @@ export async function GET(
       // Localization uncertainty radius (m) and ranked candidate locations (JSONB → already parsed)
       localization_spread_m: row.localization_spread_m != null ? parseFloat(row.localization_spread_m) : null,
       localization_candidates: row.localization_candidates ?? null,
+      // Estimated camera route [[lat,lon], ...] (JSONB → already parsed). Stays null when
+      // no route was recovered, so the Globe can distinguish that from an empty route.
+      localization_route: row.localization_route ?? null,
+      localization_route_length_m: row.localization_route_length_m != null ? parseFloat(row.localization_route_length_m) : null,
+      localization_trajectory_source: row.localization_trajectory_source ?? null,
       city_latitude: row.city_latitude != null ? parseFloat(row.city_latitude) : null,
       city_longitude: row.city_longitude != null ? parseFloat(row.city_longitude) : null,
       risky_crossing_ratio: row.risky_crossing_ratio != null ? parseFloat(row.risky_crossing_ratio) : null,

@@ -120,8 +120,33 @@ async function importVideoCoordinates() {
           }
         }
 
+        // route_latlon is a JSON array of [lat, lon] pairs — the camera's estimated path
+        // through the city. Absent for rows written before localize.py carried it, and for
+        // videos where no route was recovered; both stay NULL rather than becoming '[]',
+        // so "no route estimated" is distinguishable from "route estimated as empty".
+        let route = null;
+        const rawRoute = (row.route_latlon || '').trim();
+        if (rawRoute) {
+          try {
+            const parsed = JSON.parse(rawRoute);
+            const points = Array.isArray(parsed)
+              ? parsed.filter(p => Array.isArray(p) && p.length >= 2 &&
+                  Number.isFinite(Number(p[0])) && Number.isFinite(Number(p[1])) &&
+                  Math.abs(Number(p[0])) <= 90 && Math.abs(Number(p[1])) <= 180)
+                .map(p => [Number(p[0]), Number(p[1])])
+              : [];
+            // A polyline needs two points; a single point is already the chosen position.
+            if (points.length >= 2) route = JSON.stringify(points);
+          } catch {
+            console.log(`   ⚠️  ${link}: route_latlon JSON unparseable — stored as null`);
+          }
+        }
+        const routeLenRaw = parseFloat(row.route_length_m);
+        const routeLen = Number.isFinite(routeLenRaw) && routeLenRaw >= 0 ? routeLenRaw : null;
+        const trajSource = (row.trajectory_source || '').trim() || null;
+
         if (dryRun) {
-          console.log(`   [dry-run] ${link}: latitude=${lat}, longitude=${lon}, confidence=${confidence}, spread_m=${spreadM}, candidates=${candidates ? JSON.parse(candidates).length : 0}, street=${street}`);
+          console.log(`   [dry-run] ${link}: latitude=${lat}, longitude=${lon}, confidence=${confidence}, spread_m=${spreadM}, candidates=${candidates ? JSON.parse(candidates).length : 0}, route=${route ? JSON.parse(route).length : 0} pts, street=${street}`);
           updatedOk++;
           continue;
         }
@@ -130,10 +155,14 @@ async function importVideoCoordinates() {
            SET latitude = $1, longitude = $2, localization_confidence = $3,
                street_name = $4, localization_status = $5,
                localization_spread_m = $6, localization_candidates = $7::jsonb,
+               localization_route = $9::jsonb,
+               localization_route_length_m = $10,
+               localization_trajectory_source = $11,
                last_updated_at = CURRENT_TIMESTAMP
            WHERE link = $8
            RETURNING id, video_name`,
-          [lat, lon, confidence, street ? street.slice(0, 255) : null, status, spreadM, candidates, link]
+          [lat, lon, confidence, street ? street.slice(0, 255) : null, status, spreadM, candidates, link,
+           route, routeLen, trajSource]
         );
         if (result.rows.length > 0) {
           updatedOk++;

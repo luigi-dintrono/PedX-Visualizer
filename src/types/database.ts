@@ -139,6 +139,12 @@ export interface CityVideo {
   localization_status: string | null;
   localization_spread_m: number | null;
   localization_candidates: LocalizationCandidate[] | null;
+  // Estimated camera route through the city as [[lat, lon], ...] in WGS84, ordered along
+  // the path. These are walking-tour videos, so it is the route actually walked. null when
+  // no route was recovered — distinct from an empty route.
+  localization_route: [number, number][] | null;
+  localization_route_length_m: number | null;
+  localization_trajectory_source: string | null;
   risky_crossing_ratio: number | null;
   run_red_light_ratio: number | null;
   crosswalk_usage_ratio: number | null;

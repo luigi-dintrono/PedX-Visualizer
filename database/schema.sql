@@ -152,6 +152,13 @@ CREATE TABLE videos (
     localization_status VARCHAR(32), -- ok / no_position / osm_env_not_configured / ...
     localization_spread_m NUMERIC, -- confidence_spread_m: uncertainty radius (metres)
     localization_candidates JSONB, -- ranked candidates [{rank,latitude,longitude,street_names[],support,google_maps_url}]
+    -- Estimated camera ROUTE through the city ([[lat,lon], ...] WGS84, ordered), recovered
+    -- by visual odometry and snapped to the OSM graph. These are walking-tour videos, so
+    -- this is the path actually walked. NULL when no route was estimated — which is NOT
+    -- the same as an empty route. See scripts/migrate-add-localization-route.sql.
+    localization_route JSONB,
+    localization_route_length_m NUMERIC,
+    localization_trajectory_source TEXT, -- e.g. 'vo' (visual odometry)
     -- Temporal tracking (for historical data analysis)
     data_collected_date DATE, -- When data was originally collected
     import_batch_id INTEGER REFERENCES import_batches(id), -- Which import batch added this data
@@ -328,6 +335,8 @@ CREATE INDEX idx_videos_weather ON videos(main_weather);
 CREATE INDEX idx_videos_geographic ON videos(latitude, longitude);
 CREATE INDEX idx_videos_temporal ON videos(data_collected_date, import_batch_id);
 CREATE INDEX idx_videos_first_imported ON videos(first_imported_at);
+-- Partial: only a small minority of videos are localized, and every read filters NOT NULL.
+CREATE INDEX idx_videos_localization_route ON videos ((localization_route IS NOT NULL)) WHERE localization_route IS NOT NULL;
 
 -- Pedestrians indexes
 CREATE INDEX idx_pedestrians_video_id ON pedestrians(video_id);

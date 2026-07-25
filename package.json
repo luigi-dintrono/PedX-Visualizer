@@ -27,6 +27,7 @@
     "db:migrate-video-insights": "node scripts/run-sql.js scripts/migrate-add-video-insights.sql",
     "db:migrate-pedestrian-speed": "node scripts/run-sql.js scripts/migrate-add-pedestrian-speed.sql",
     "db:migrate-fix-plpgsql": "node scripts/run-sql.js scripts/migrate-fix-plpgsql-result-types.sql",
+    "db:migrate-localization-route": "node scripts/run-sql.js scripts/migrate-add-localization-route.sql",
     "db:publish": "node scripts/aggregate-csv-data.js && node scripts/import-video-coordinates.js && node scripts/refresh-views.js && node scripts/generate-city-insights.js && node scripts/refresh-views.js"
   },
   "dependencies": {
