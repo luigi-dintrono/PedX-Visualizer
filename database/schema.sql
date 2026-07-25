@@ -105,6 +105,43 @@ CREATE TABLE videos (
     -- Distinct from crossing_speed (an imported city-level constant). NULL when the video
     -- was analyzed before the dense-tracking pass (see scripts/migrate-add-measured-speed.sql).
     measured_walking_speed_mps NUMERIC,
+    -- MEASURED median curb-to-curb crossing speed (m/s) of reliable crossers, PedX-Insight [S1].
+    -- The like-for-like counterpart of the imported `crossing_speed` constant; NULL when no
+    -- crossing was measurable. See scripts/migrate-add-video-insights.sql.
+    measured_crossing_speed_mps NUMERIC,
+    measured_crossing_speed_n INTEGER, -- sample size behind measured_crossing_speed_mps
+    -- Analysis pipeline that produced this row: 'dense_v2' (dense tracking, measured
+    -- kinematics) or 'legacy_1hz'. NULL for videos imported before the column existed.
+    -- total_pedestrians is NOT comparable across versions: the legacy 1 Hz tracker
+    -- fragmented and under-counted. Group or filter on this column rather than
+    -- averaging the eras together.
+    pipeline_version TEXT,
+    -- Surrogate-safety (PET) conflicts [I1]
+    pet_severe_conflicts INTEGER,
+    pet_moderate_conflicts INTEGER,
+    pet_queued_interactions INTEGER,
+    pet_min_s NUMERIC,
+    -- Vehicle kinematics and flow [V8] / [V11]
+    vehicle_median_speed_mps NUMERIC,
+    vehicle_p85_speed_mps NUMERIC,
+    mean_headway_s NUMERIC,
+    platoon_frac NUMERIC,
+    vehicle_flow_per_min NUMERIC,
+    -- Signal-phase behaviour [P10]
+    anticipatory_start_frac NUMERIC,
+    mean_red_exposure_s NUMERIC,
+    -- Hesitation / micro-events [P11]
+    hesitation_rate NUMERIC,
+    aborted_start_rate NUMERIC,
+    evasive_event_count INTEGER,
+    -- Social groups [I2] / [I3]
+    n_social_groups INTEGER,
+    grouped_pedestrians INTEGER,
+    -- Pose: looking behaviour and gait [P12]
+    look_before_cross_frac NUMERIC, -- fraction who turned their head before crossing
+    looked_both_ways_frac NUMERIC,
+    median_cadence_hz NUMERIC,
+    cadence_n INTEGER, -- sample size behind median_cadence_hz
     -- Geographic coordinates (optional - if null, use city coordinates)
     latitude DECIMAL(10, 8),
     longitude DECIMAL(11, 8),
@@ -142,6 +179,12 @@ CREATE TABLE pedestrians (
     gender VARCHAR(20),
     age INTEGER,
     phone_using BOOLEAN,
+    -- MEASURED per-pedestrian kinematics from PedX-Insight [S1] dense foot-point
+    -- trajectories. NULL when no reliable trajectory exists (not fabricated).
+    -- See scripts/migrate-add-pedestrian-speed.sql.
+    walking_speed_mps NUMERIC,
+    crossing_speed_mps NUMERIC, -- over the crossing segment; NULL for non-crossers
+    decision_delay_s NUMERIC,   -- kerb-stationary to crossing start
     -- Carried items
     backpack BOOLEAN,
     umbrella BOOLEAN,
@@ -187,6 +230,10 @@ CREATE TABLE pedestrians (
     bus BOOLEAN,
     car BOOLEAN,
     garbagevan BOOLEAN,
+    -- The real detector class is the single CSV column "human hauler". The legacy
+    -- `human` / `hauler` pair below is an old split of that one name and is empty in
+    -- every current CSV; both are retained unchanged for backward compatibility.
+    human_hauler BOOLEAN,
     human BOOLEAN,
     hauler BOOLEAN,
     minibus BOOLEAN,
@@ -288,6 +335,10 @@ CREATE INDEX idx_pedestrians_track_id ON pedestrians(track_id);
 CREATE INDEX idx_pedestrians_gender ON pedestrians(gender);
 CREATE INDEX idx_pedestrians_age ON pedestrians(age);
 CREATE INDEX idx_pedestrians_behavior ON pedestrians(risky_crossing, run_red_light, crosswalk_use_or_not);
+-- Partial: usable queries filter on NOT NULL, and skipping NULLs keeps these small
+-- on rows imported before the [S1] speed module ran.
+CREATE INDEX idx_pedestrians_walking_speed ON pedestrians (walking_speed_mps) WHERE walking_speed_mps IS NOT NULL;
+CREATE INDEX idx_pedestrians_crossing_speed ON pedestrians (crossing_speed_mps) WHERE crossing_speed_mps IS NOT NULL;
 
 -- Analytics indexes
 CREATE INDEX idx_analytics_dimensions_type ON analytics_dimensions(dimension_type);

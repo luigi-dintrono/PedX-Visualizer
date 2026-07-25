@@ -420,7 +420,19 @@ class DatabaseAggregator {
                     city_id: cityId,
                     link: cleanString(row.link),
                     video_name: cleanString(row.video_name),
-                    city_link: cleanString(row.city_link || `${row.city}_${row.link}`),
+                    // all_video_info.csv has NO city_link column (only all_pedestrian_info.csv
+                    // does), so row.city_link is always undefined here and the old
+                    // `${row.city}_${row.link}` fallback produced values that do not match the
+                    // pedestrian CSV: it loses the per-city video index and uses the
+                    // gazetteer-canonicalised row.city (enrichCityRow() mutated it in
+                    // aggregateCities()). e.g. it yielded "London_slTbgnXsBik" where the real
+                    // city_link is "London1_slTbgnXsBik".
+                    // The authoritative value is the analysis folder name, which
+                    // get_all_pede_info.py writes verbatim as city_link and
+                    // get_all_video_info.py writes verbatim as video_name — so video_name IS the
+                    // city_link. Keep row.city_link first (future CSVs may carry it) and the
+                    // legacy concatenation last as a final fallback.
+                    city_link: cleanString(row.city_link || row.video_name || `${row.city}_${row.link}`),
                     duration_seconds: safeNumeric(row.duration_seconds),
                     total_frames: safeInteger(row.total_frames),
                     // link-keyed map for new CSVs; duration-keyed fallback for legacy ones
@@ -451,6 +463,29 @@ class DatabaseAggregator {
                     // Measured per-video median walking speed from [S1] (reliable tracks only);
                     // NULL for videos analyzed before the dense-tracking pass.
                     measured_walking_speed_mps: safeNumeric(row.measured_avg_walking_speed_mps),
+                    measured_crossing_speed_mps: safeNumeric(row.measured_crossing_speed_mps),
+                    measured_crossing_speed_n: safeInteger(row.measured_crossing_speed_n),
+                    pipeline_version: cleanString(row.pipeline_version),
+                    pet_severe_conflicts: safeInteger(row.pet_severe_conflicts),
+                    pet_moderate_conflicts: safeInteger(row.pet_moderate_conflicts),
+                    pet_queued_interactions: safeInteger(row.pet_queued_interactions),
+                    pet_min_s: safeNumeric(row.pet_min_s),
+                    vehicle_median_speed_mps: safeNumeric(row.vehicle_median_speed_mps),
+                    vehicle_p85_speed_mps: safeNumeric(row.vehicle_p85_speed_mps),
+                    mean_headway_s: safeNumeric(row.mean_headway_s),
+                    platoon_frac: safeNumeric(row.platoon_frac),
+                    vehicle_flow_per_min: safeNumeric(row.vehicle_flow_per_min),
+                    anticipatory_start_frac: safeNumeric(row.anticipatory_start_frac),
+                    mean_red_exposure_s: safeNumeric(row.mean_red_exposure_s),
+                    hesitation_rate: safeNumeric(row.hesitation_rate),
+                    aborted_start_rate: safeNumeric(row.aborted_start_rate),
+                    evasive_event_count: safeInteger(row.evasive_event_count),
+                    n_social_groups: safeInteger(row.n_social_groups),
+                    grouped_pedestrians: safeInteger(row.grouped_pedestrians),
+                    look_before_cross_frac: safeNumeric(row.look_before_cross_frac),
+                    looked_both_ways_frac: safeNumeric(row.looked_both_ways_frac),
+                    median_cadence_hz: safeNumeric(row.median_cadence_hz),
+                    cadence_n: safeInteger(row.cadence_n),
                     data_collected_date: dataCollectedDate,
                     import_batch_id: this.currentImportBatchId
                 };
@@ -476,11 +511,13 @@ class DatabaseAggregator {
                         avg_road_width, crack_prob, potholes_prob, police_car_prob,
                         arrow_board_prob, cones_prob, accident_prob, crossing_time, crossing_speed,
                         measured_walking_speed_mps,
+                        measured_crossing_speed_mps, measured_crossing_speed_n, pipeline_version, pet_severe_conflicts, pet_moderate_conflicts, pet_queued_interactions, pet_min_s, vehicle_median_speed_mps, vehicle_p85_speed_mps, mean_headway_s, platoon_frac, vehicle_flow_per_min, anticipatory_start_frac, mean_red_exposure_s, hesitation_rate, aborted_start_rate, evasive_event_count, n_social_groups, grouped_pedestrians, look_before_cross_frac, looked_both_ways_frac, median_cadence_hz, cadence_n,
                         data_collected_date, import_batch_id, first_imported_at, last_updated_at
                     ) VALUES (
                         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
                         $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30,
-                        $31, $32, $33, $34, $35
+                        $31, $32, $33, $34, $35,
+                        $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58
                     )
                     ON CONFLICT (link) 
                     DO UPDATE SET
@@ -514,6 +551,29 @@ class DatabaseAggregator {
                         crossing_time = EXCLUDED.crossing_time,
                         crossing_speed = EXCLUDED.crossing_speed,
                         measured_walking_speed_mps = EXCLUDED.measured_walking_speed_mps,
+                        measured_crossing_speed_mps = EXCLUDED.measured_crossing_speed_mps,
+                        measured_crossing_speed_n = EXCLUDED.measured_crossing_speed_n,
+                        pipeline_version = EXCLUDED.pipeline_version,
+                        pet_severe_conflicts = EXCLUDED.pet_severe_conflicts,
+                        pet_moderate_conflicts = EXCLUDED.pet_moderate_conflicts,
+                        pet_queued_interactions = EXCLUDED.pet_queued_interactions,
+                        pet_min_s = EXCLUDED.pet_min_s,
+                        vehicle_median_speed_mps = EXCLUDED.vehicle_median_speed_mps,
+                        vehicle_p85_speed_mps = EXCLUDED.vehicle_p85_speed_mps,
+                        mean_headway_s = EXCLUDED.mean_headway_s,
+                        platoon_frac = EXCLUDED.platoon_frac,
+                        vehicle_flow_per_min = EXCLUDED.vehicle_flow_per_min,
+                        anticipatory_start_frac = EXCLUDED.anticipatory_start_frac,
+                        mean_red_exposure_s = EXCLUDED.mean_red_exposure_s,
+                        hesitation_rate = EXCLUDED.hesitation_rate,
+                        aborted_start_rate = EXCLUDED.aborted_start_rate,
+                        evasive_event_count = EXCLUDED.evasive_event_count,
+                        n_social_groups = EXCLUDED.n_social_groups,
+                        grouped_pedestrians = EXCLUDED.grouped_pedestrians,
+                        look_before_cross_frac = EXCLUDED.look_before_cross_frac,
+                        looked_both_ways_frac = EXCLUDED.looked_both_ways_frac,
+                        median_cadence_hz = EXCLUDED.median_cadence_hz,
+                        cadence_n = EXCLUDED.cadence_n,
                         data_collected_date = COALESCE(EXCLUDED.data_collected_date, videos.data_collected_date),
                         import_batch_id = EXCLUDED.import_batch_id,
                         last_updated_at = CURRENT_TIMESTAMP,
@@ -553,6 +613,29 @@ class DatabaseAggregator {
                     videoDataValues.crossing_time,
                     videoDataValues.crossing_speed,
                     videoDataValues.measured_walking_speed_mps,
+                    videoDataValues.measured_crossing_speed_mps,
+                    videoDataValues.measured_crossing_speed_n,
+                    videoDataValues.pipeline_version,
+                    videoDataValues.pet_severe_conflicts,
+                    videoDataValues.pet_moderate_conflicts,
+                    videoDataValues.pet_queued_interactions,
+                    videoDataValues.pet_min_s,
+                    videoDataValues.vehicle_median_speed_mps,
+                    videoDataValues.vehicle_p85_speed_mps,
+                    videoDataValues.mean_headway_s,
+                    videoDataValues.platoon_frac,
+                    videoDataValues.vehicle_flow_per_min,
+                    videoDataValues.anticipatory_start_frac,
+                    videoDataValues.mean_red_exposure_s,
+                    videoDataValues.hesitation_rate,
+                    videoDataValues.aborted_start_rate,
+                    videoDataValues.evasive_event_count,
+                    videoDataValues.n_social_groups,
+                    videoDataValues.grouped_pedestrians,
+                    videoDataValues.look_before_cross_frac,
+                    videoDataValues.looked_both_ways_frac,
+                    videoDataValues.median_cadence_hz,
+                    videoDataValues.cadence_n,
                     videoDataValues.data_collected_date,
                     videoDataValues.import_batch_id,
                     firstImportedAt,
@@ -669,7 +752,19 @@ class DatabaseAggregator {
                     three_wheelers_cng: safeBoolean(row['three wheelers -CNG-']),
                     truck: safeBoolean(row.truck),
                     van: safeBoolean(row.van),
-                    wheelbarrow: safeBoolean(row.wheelbarrow)
+                    wheelbarrow: safeBoolean(row.wheelbarrow),
+                    // The real detector class is the single column "human hauler". The legacy
+                    // 'human' / 'hauler' columns above are an old split of that name and are
+                    // ALWAYS empty in every CSV (0/1119 rows populated), so they inserted NULL
+                    // and the flag never reached the database. They are kept mapped as-is for
+                    // backward compatibility; this is the column that actually carries data.
+                    human_hauler: safeBoolean(row['human hauler']),
+                    // Per-pedestrian measured speeds from PedX-Insight [S1]. Present in
+                    // all_pedestrian_info.csv but previously dropped at the DB boundary.
+                    // NULL for pedestrians with no reliable trajectory — refuse, don't fabricate.
+                    walking_speed_mps: safeNumeric(row.walking_speed_mps),
+                    crossing_speed_mps: safeNumeric(row.crossing_speed_mps),
+                    decision_delay_s: safeNumeric(row.decision_delay_s)
                 };
 
                 await pool.query(`
@@ -683,14 +778,15 @@ class DatabaseAggregator {
                         crossing_sign, avg_road_width, crosswalk, sidewalk, ambulance, army_vehicle,
                         auto_rickshaw, bicycle, bus, car, garbagevan, human, hauler, minibus, minivan,
                         motorbike, pickup, policecar, rickshaw, scooter, suv, taxi, three_wheelers_cng,
-                        truck, van, wheelbarrow
+                        truck, van, wheelbarrow,
+                        human_hauler, walking_speed_mps, crossing_speed_mps, decision_delay_s
                     ) VALUES (
                         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
                         $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38,
                         $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56,
-                        $57, $58, $59, $60, $61, $62, $63
+                        $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67
                     )
-                    ON CONFLICT (video_id, track_id) 
+                    ON CONFLICT (video_id, track_id)
                     DO UPDATE SET
                         crossed = EXCLUDED.crossed,
                         nearby_count_beginning = EXCLUDED.nearby_count_beginning,
@@ -701,6 +797,13 @@ class DatabaseAggregator {
                         gender = EXCLUDED.gender,
                         age = EXCLUDED.age,
                         phone_using = EXCLUDED.phone_using,
+                        -- Must be refreshed on conflict too: pedestrian rows imported before
+                        -- these columns existed are already in the table, so an INSERT-only
+                        -- mapping would leave them NULL forever on every re-import.
+                        human_hauler = EXCLUDED.human_hauler,
+                        walking_speed_mps = EXCLUDED.walking_speed_mps,
+                        crossing_speed_mps = EXCLUDED.crossing_speed_mps,
+                        decision_delay_s = EXCLUDED.decision_delay_s,
                         updated_at = CURRENT_TIMESTAMP
                 `, Object.values(pedestrianData));
                 

@@ -21,6 +21,17 @@ function calculateBaseline(values: number[]): number {
   return validValues.reduce((sum, v) => sum + v, 0) / validValues.length;
 }
 
+// weather_daytime_stats.csv writes the daylight bucket as a label ("Day", "Evening",
+// "Night"). Older exports used a 1/0 flag, so both encodings are accepted; anything
+// else is passed through capitalised rather than silently collapsed to one bucket.
+function formatDaytime(raw: string): string {
+  const value = (raw ?? '').trim();
+  if (value === '1') return 'Day';
+  if (value === '0') return 'Night';
+  if (!value) return 'Unknown';
+  return value.charAt(0).toUpperCase() + value.slice(1).toLowerCase();
+}
+
 // Helper function to apply category balancing (max N per category)
 function balanceCategories(relationships: Relationship[], maxPerCategory: number = 3): Relationship[] {
   const byCategory: Record<string, Relationship[]> = {};
@@ -60,30 +71,31 @@ export async function GET(
       const csvContent = fs.readFileSync(weatherDaytimePath, 'utf-8');
       const records = parse(csvContent, { columns: true, skip_empty_lines: true });
 
-      // Calculate baselines from data, excluding 0.00% values
+      // NB: *_prob in this CSV is ALREADY a percentage (0-100), unlike gender_stats.csv
+      // and age_stats.csv which are 0-1 fractions. Do not rescale it.
       const riskyProbs = records
         .map((r: any) => parseFloat(r.risky_crossing_prob))
-        .filter(v => !isNaN(v) && v > 0.0001); // Exclude 0.00% values
+        .filter(v => !isNaN(v) && v > 0.01); // Exclude 0.00% values
       const redLightProbs = records
         .map((r: any) => parseFloat(r.run_red_light_prob))
-        .filter(v => !isNaN(v) && v > 0.0001); // Exclude 0.00% values
-      
-      const baselineRisky = calculateBaseline(riskyProbs) * 100; // Convert to percentage
-      const baselineRedLight = calculateBaseline(redLightProbs) * 100;
+        .filter(v => !isNaN(v) && v > 0.01); // Exclude 0.00% values
+
+      const baselineRisky = calculateBaseline(riskyProbs);
+      const baselineRedLight = calculateBaseline(redLightProbs);
 
       for (const record of records) {
         const rec = record as any;
         const weather = rec.weather;
-        const daytime = rec.daytime === '1' ? 'Day' : 'Night';
+        const daytime = formatDaytime(rec.daytime);
         const riskyProbRaw = parseFloat(rec.risky_crossing_prob);
         const redLightProbRaw = parseFloat(rec.run_red_light_prob);
-        
+
         // Skip records with 0.00% values
-        if (metric === 'risky_crossing' && (isNaN(riskyProbRaw) || riskyProbRaw <= 0.0001)) continue;
-        if (metric === 'run_red_light' && (isNaN(redLightProbRaw) || redLightProbRaw <= 0.0001)) continue;
-        
-        const riskyProb = riskyProbRaw * 100; // Convert to percentage
-        const redLightProb = redLightProbRaw * 100;
+        if (metric === 'risky_crossing' && (isNaN(riskyProbRaw) || riskyProbRaw <= 0.01)) continue;
+        if (metric === 'run_red_light' && (isNaN(redLightProbRaw) || redLightProbRaw <= 0.01)) continue;
+
+        const riskyProb = riskyProbRaw;
+        const redLightProb = redLightProbRaw;
 
         if (metric === 'risky_crossing' && !isNaN(riskyProb)) {
           const effectSize = riskyProb - baselineRisky;
