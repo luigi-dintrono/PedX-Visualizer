@@ -20,8 +20,7 @@ function MainContent({ isInfoSidebarOpen, setIsInfoSidebarOpen }: {
     granularFilters, 
     setSelectedCity, 
     setSelectedMetrics,
-    updateGranularFilter,
-    resetGranularFilters 
+    updateGranularFilter
   } = useFilter();
 
   // Get active filters for badge display

@@ -52,7 +52,7 @@ const METRICS: {
   },
 ];
 
-export async function GET(request: NextRequest) {
+export async function GET(_request: NextRequest) {
   try {
     // One concurrent batch instead of 1 + N sequential Neon round-trips (was ~600ms warm).
     const [globalResult, ...extremesResults] = await Promise.all([

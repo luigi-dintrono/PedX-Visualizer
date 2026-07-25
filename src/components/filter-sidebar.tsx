@@ -9,7 +9,6 @@ import {
   Users, 
   User, 
   Shirt,
-  Car,
   Search,
   Activity,
   AlertTriangle,
@@ -118,13 +117,11 @@ export function FilterSidebar() {
     selectedMetrics,
     granularFilters,
     cityData,
-    metricData,
     loading,
     setSelectedCity,
     setSelectedMetrics,
     updateGranularFilter,
     resetGranularFilters,
-    applyFilters,
   } = useFilter()
 
   // State for city search dropdown

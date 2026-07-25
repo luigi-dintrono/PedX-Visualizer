@@ -8,7 +8,7 @@ import { READ_CACHE_HEADERS } from '@/lib/http';
  * Fetches global baseline insights for comparison with city-specific data
  * Returns global averages for all key metrics
  */
-export async function GET(request: NextRequest) {
+export async function GET(_request: NextRequest) {
   try {
     // Fetch global baseline from materialized view
     const globalResult = await pool.query(`

@@ -38,6 +38,64 @@ export interface CityInsight {
   };
 }
 
+// Per-city rollup of the PedX-Insight measured modules, served by
+// /api/cities/[city]/details. A null group means the module never ran for this city's
+// videos — it is NOT the same as a measured zero, and the UI must not render it as one.
+export interface MeasuredBehavior {
+  // How many of the city's videos came from each analysis pipeline. total_pedestrians is
+  // not comparable across these: legacy_1hz fragmented and under-counted tracks, dense_v2
+  // counts every tracked pedestrian. `unversioned` are rows imported before the column
+  // existed and should be treated as legacy.
+  pipeline: { dense_v2: number; legacy_1hz: number; unversioned: number };
+  // `analysed` = rows present in the pedestrians table (the denominator behind every rate
+  // metric in this app). `tracked` = the count the pipeline actually reported. Under
+  // dense_v2 these differ by roughly an order of magnitude.
+  pedestrian_counts: { analysed: number; tracked: number | null };
+  crossing_speed: { mps: number | null; n: number | null } | null;
+  vehicle_speed: { median_mps: number | null; p85_mps: number | null; videos: number } | null;
+  flow: {
+    mean_headway_s: number | null;
+    platoon_frac: number | null;
+    vehicles_per_min: number | null;
+    videos: number;
+  } | null;
+  conflicts: {
+    severe: number | null;
+    moderate: number | null;
+    queued: number | null;
+    min_pet_s: number | null;
+    videos: number;
+  } | null;
+  signal: {
+    anticipatory_start_frac: number | null;
+    mean_red_exposure_s: number | null;
+    videos: number;
+  } | null;
+  micro_events: {
+    hesitation_rate: number | null;
+    aborted_start_rate: number | null;
+    evasive_events: number | null;
+    videos: number;
+  } | null;
+  social: { groups: number | null; grouped_pedestrians: number | null; videos: number } | null;
+  pose: {
+    look_before_cross_frac: number | null;
+    looked_both_ways_frac: number | null;
+    median_cadence_hz: number | null;
+    cadence_n: number | null;
+    videos: number;
+  } | null;
+  // Medians over a plausibility-filtered population; `implausible_n` is how many tracks
+  // were excluded for reporting physically impossible speeds.
+  pedestrian_kinematics: {
+    walking_speed_mps: number | null;
+    crossing_speed_mps: number | null;
+    decision_delay_s: number | null;
+    n: number | null;
+    implausible_n: number;
+  } | null;
+}
+
 export interface MetricInsight {
   id: number;
   metric_type: string;

@@ -63,8 +63,10 @@ export async function GET(request: NextRequest) {
     const umbrella = searchParams.get('umbrella');
     const handbag = searchParams.get('handbag');
     const suitcase = searchParams.get('suitcase');
-    const vehiclePresence = searchParams.get('vehiclePresence');
-    
+    // NB: no `vehiclePresence` read here. FilterContext declares the field but nothing
+    // ever sets it and no control sends it, so the parameter never arrives — it was being
+    // read into a variable that was never used.
+
     // Vehicle count filters
     const minCar = searchParams.get('minCar');
     const maxCar = searchParams.get('maxCar');

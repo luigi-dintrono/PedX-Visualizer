@@ -28,7 +28,7 @@ import { Badge } from "@/components/ui/badge"
 import { ListItem } from "@/components/ui/list-item"
 import { Button } from "@/components/ui/button"
 import { useFilter } from "@/contexts/FilterContext"
-import { CityInsight } from "@/types/database"
+import { CityInsight, MeasuredBehavior } from "@/types/database"
 import {
   Drawer,
   DrawerClose,
@@ -37,15 +37,30 @@ import {
   DrawerFooter,
   DrawerHeader,
   DrawerTitle,
-  DrawerTrigger,
 } from "@/components/ui/drawer"
 import { Area, AreaChart, CartesianGrid, XAxis } from "recharts"
 import {
-  ChartConfig,
   ChartContainer,
   ChartTooltip,
   ChartTooltipContent,
 } from "@/components/ui/chart"
+
+// The measured-behaviour card is worth showing only when at least one module actually
+// produced something. pipeline/pedestrian_counts are always populated (they are derived
+// from the videos rows themselves), so they do not count as content on their own.
+function hasMeasuredBehavior(mb: MeasuredBehavior): boolean {
+  return Boolean(
+    mb.crossing_speed ||
+    mb.vehicle_speed ||
+    mb.flow ||
+    mb.conflicts ||
+    mb.signal ||
+    mb.micro_events ||
+    mb.social ||
+    mb.pose ||
+    mb.pedestrian_kinematics
+  )
+}
 
 interface TopInsight {
   city: string;
@@ -112,7 +127,7 @@ interface TemporalMetricData {
 
 export function InfoSidebar() {
   // cityVideos comes from the context's single shared fetch (also used by the Globe's markers)
-  const { filteredCityData, selectedCity, setSelectedCity, cityData, cityVideos, selectedMetrics, granularFilters } = useFilter()
+  const { filteredCityData, selectedCity, setSelectedCity, cityVideos, selectedMetrics, granularFilters } = useFilter()
   const [topInsights, setTopInsights] = useState<TopInsight[]>([])
   const [metricData, setMetricData] = useState<MetricData | null>(null)
   const [metricRelationships, setMetricRelationships] = useState<MetricRelationship[]>([])
@@ -156,6 +171,9 @@ export function InfoSidebar() {
     avg_pedestrian_age: number | null;
     // Per-city insight texts, served here since the bulk /api/cities list no longer carries them
     insights?: CityInsight[] | null;
+    // PedX-Insight measured behaviour. Every group is null when the module that produces it
+    // never ran for this city, which the UI renders as absent rather than as zero.
+    measured_behavior?: MeasuredBehavior | null;
   } | null>(null)
   const [cityDetailsLoading, setCityDetailsLoading] = useState(false)
   const cityDetailsAbortRef = useRef<AbortController | null>(null)
@@ -1019,9 +1037,16 @@ export function InfoSidebar() {
                 <Eye className="w-4 h-4" />
                 {filteredCityData.total_videos || 0} videos analyzed
               </div>
+              {/* "Pedestrians" was ambiguous: this number is the count of rows in the
+                  pedestrians table (the denominator of every rate metric shown below), which
+                  under the dense_v2 pipeline is roughly a tenth of the pedestrians the
+                  tracker actually counted. Both are labelled explicitly now. */}
               <div className="flex items-center gap-1">
                 <Users className="w-4 h-4" />
-                {filteredCityData.total_pedestrians || 0} pedestrians
+                {filteredCityData.total_pedestrians || 0} analysed
+                {cityDetails?.measured_behavior?.pedestrian_counts?.tracked
+                  ? ` of ${cityDetails.measured_behavior.pedestrian_counts.tracked.toLocaleString()} tracked`
+                  : ' pedestrians'}
               </div>
             </div>
           </div>
@@ -1469,6 +1494,100 @@ export function InfoSidebar() {
               </CardContent>
             </Card>
           </div>
+
+          {/* Measured behaviour — PedX-Insight [S1] kinematics plus the six insight modules
+              and pose. Only rendered for cities whose videos actually went through those
+              modules; a missing group is omitted rather than shown as zero. */}
+          {cityDetails?.measured_behavior && hasMeasuredBehavior(cityDetails.measured_behavior) && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <Activity className="w-4 h-4" />
+                  Measured Behaviour
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {(() => {
+                  const mb = cityDetails.measured_behavior!
+                  const pct = (v: number | null) => (v === null ? null : `${(v * 100).toFixed(0)}%`)
+                  return (
+                    <>
+                      {mb.crossing_speed?.mps != null && (
+                        <div className="text-sm">
+                          <span className="font-medium">Crossing speed:</span> {mb.crossing_speed.mps.toFixed(2)} m/s
+                          <span className="text-xs text-muted-foreground"> (measured, {mb.crossing_speed.n} crossers)</span>
+                        </div>
+                      )}
+                      {mb.pedestrian_kinematics && (
+                        <div className="text-sm">
+                          <span className="font-medium">Walking speed:</span> {mb.pedestrian_kinematics.walking_speed_mps?.toFixed(2) ?? '—'} m/s
+                          <span className="text-xs text-muted-foreground"> (median of {mb.pedestrian_kinematics.n} tracks
+                          {mb.pedestrian_kinematics.implausible_n > 0
+                            ? `; ${mb.pedestrian_kinematics.implausible_n} implausible excluded`
+                            : ''})</span>
+                        </div>
+                      )}
+                      {mb.conflicts && (
+                        <div className="text-sm">
+                          <span className="font-medium">Conflicts (PET):</span> {mb.conflicts.severe ?? 0} severe, {mb.conflicts.moderate ?? 0} moderate
+                          {mb.conflicts.min_pet_s != null && (
+                            <span className="text-xs text-muted-foreground"> (closest {mb.conflicts.min_pet_s.toFixed(2)} s)</span>
+                          )}
+                        </div>
+                      )}
+                      {mb.vehicle_speed?.median_mps != null && (
+                        <div className="text-sm">
+                          <span className="font-medium">Vehicle speed:</span> {mb.vehicle_speed.median_mps.toFixed(1)} m/s median
+                          {mb.vehicle_speed.p85_mps != null && `, ${mb.vehicle_speed.p85_mps.toFixed(1)} m/s p85`}
+                        </div>
+                      )}
+                      {mb.flow && (
+                        <div className="text-sm">
+                          <span className="font-medium">Traffic flow:</span> {mb.flow.vehicles_per_min?.toFixed(0) ?? '—'} veh/min
+                          {mb.flow.mean_headway_s != null && `, ${mb.flow.mean_headway_s.toFixed(1)} s headway`}
+                          {mb.flow.platoon_frac != null && `, ${pct(mb.flow.platoon_frac)} platooned`}
+                        </div>
+                      )}
+                      {mb.pose && (
+                        <div className="text-sm">
+                          <span className="font-medium">Looked before crossing:</span> {pct(mb.pose.look_before_cross_frac) ?? '—'}
+                          {mb.pose.looked_both_ways_frac != null && (
+                            <span className="text-xs text-muted-foreground"> ({pct(mb.pose.looked_both_ways_frac)} both ways)</span>
+                          )}
+                        </div>
+                      )}
+                      {mb.signal && (
+                        <div className="text-sm">
+                          <span className="font-medium">Signal behaviour:</span> {pct(mb.signal.anticipatory_start_frac) ?? '—'} anticipatory starts
+                          {mb.signal.mean_red_exposure_s != null && `, ${mb.signal.mean_red_exposure_s.toFixed(1)} s mean red exposure`}
+                        </div>
+                      )}
+                      {mb.micro_events && (
+                        <div className="text-sm">
+                          <span className="font-medium">Hesitation:</span> {pct(mb.micro_events.hesitation_rate) ?? '—'}
+                          {mb.micro_events.evasive_events != null && `, ${mb.micro_events.evasive_events} evasive events`}
+                        </div>
+                      )}
+                      {mb.social && (
+                        <div className="text-sm">
+                          <span className="font-medium">Social groups:</span> {mb.social.groups ?? 0} groups
+                          {mb.social.grouped_pedestrians != null && `, ${mb.social.grouped_pedestrians} pedestrians in company`}
+                        </div>
+                      )}
+                      {/* Provenance. total_pedestrians is not comparable across pipelines, so
+                          say which one produced this city rather than letting the reader assume. */}
+                      <div className="text-xs text-muted-foreground pt-1 border-t border-border/50">
+                        {mb.pipeline.dense_v2 > 0 && `${mb.pipeline.dense_v2} video${mb.pipeline.dense_v2 > 1 ? 's' : ''} on the dense pipeline`}
+                        {mb.pipeline.dense_v2 > 0 && (mb.pipeline.legacy_1hz + mb.pipeline.unversioned) > 0 && ', '}
+                        {(mb.pipeline.legacy_1hz + mb.pipeline.unversioned) > 0 &&
+                          `${mb.pipeline.legacy_1hz + mb.pipeline.unversioned} on the legacy 1 Hz pipeline (counts not comparable)`}
+                      </div>
+                    </>
+                  )
+                })()}
+              </CardContent>
+            </Card>
+          )}
 
           {/* Videos Used */}
           <Card>

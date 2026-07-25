@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { pool } from '@/lib/database';
 import path from 'path';
 import fs from 'fs';
 import { parse } from 'csv-parse/sync';
@@ -386,16 +385,9 @@ export async function GET(
       const csvContent = fs.readFileSync(vehicleStatsPath, 'utf-8');
       const records = parse(csvContent, { columns: true, skip_empty_lines: true });
 
-      // Check if crossing_speed data exists in crossing_stats.csv
-      const crossingStatsPath = path.join(process.cwd(), 'summary_data', 'crossing_stats.csv');
-      const speedData: Record<string, number> = {};
-      
-      if (fs.existsSync(crossingStatsPath) && metric === 'crossing_speed') {
-        const crossingContent = fs.readFileSync(crossingStatsPath, 'utf-8');
-        const crossingRecords = parse(crossingContent, { columns: true, skip_empty_lines: true });
-        // Note: crossing_stats.csv has continent-level data, not vehicle-level
-        // We'll skip vehicle speed relationships if no direct data
-      }
+      // crossing_stats.csv was read here to derive per-vehicle crossing speeds, but it only
+      // carries continent-level rows, so the parse result was always discarded. Removed
+      // rather than left as a no-op file read on every request.
 
       // Use available columns: risky_crossing_rate and run_red_light_rate
       // Exclude 0.00% values when calculating baselines

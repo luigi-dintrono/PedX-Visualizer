@@ -148,6 +148,11 @@ const METRIC_CONFIG = {
       min: [0, 1, 0, 0.6], // Green for low density
       max: [1, 0.6, 0, 0.8], // Orange for high density
     },
+    // videos.total_pedestrians is not comparable across analysis pipelines: the legacy
+    // 1 Hz tracker fragmented and under-counted, while dense_v2 counts every tracked
+    // pedestrian. Only a handful of cities have been re-analysed on dense_v2, so this
+    // layer is dominated by which pipeline ran, not by how busy the city is.
+    caveat: 'Counts are not comparable across analysis pipelines',
   },
   road_width: {
     property: 'avg_road_width',
@@ -348,7 +353,6 @@ export default function Globe() {
     selectedCity,
     selectedMetrics,
     granularFilters,
-    filteredCityData,
     cityData,
     cityVideos,
     setSelectedCity,
@@ -575,19 +579,6 @@ export default function Globe() {
     granularFilters.bottomWear[1],
     granularFilters.bottomWear[2],
   ]);
-
-  // Scene mode controls
-  const morphTo2D = useCallback(async () => {
-    if (!viewerRef.current) return;
-    await loadCesium();
-    viewerRef.current.scene.morphTo2D(0.8);
-  }, []);
-
-  const morphTo3D = useCallback(async () => {
-    if (!viewerRef.current) return;
-    await loadCesium();
-    viewerRef.current.scene.morphTo3D(0.8);
-  }, []);
 
   // Get color for metric value
   const getColorForMetric = useCallback((
@@ -988,7 +979,7 @@ export default function Globe() {
     const markerDepthTestDistance = is2D ? Number.POSITIVE_INFINITY : 1000000;
 
     // Create markers for each video
-    videosWithCoords.forEach((video, index) => {
+    videosWithCoords.forEach((video) => {
       const lat = video.latitude ?? video.city_latitude;
       const lng = video.longitude ?? video.city_longitude;
       
@@ -1000,7 +991,7 @@ export default function Globe() {
         return;
       }
 
-      const entity = videoDataSource.entities.add({
+      videoDataSource.entities.add({
         position: Cesium.Cartesian3.fromDegrees(
           lngNum,
           latNum,
@@ -1620,6 +1611,13 @@ export default function Globe() {
             <div className="text-xs text-gray-300 pt-2 border-t border-gray-600">
               <div>Unit: <span className="font-mono">{METRIC_CONFIG[selectedMetrics[0] as keyof typeof METRIC_CONFIG]?.unit || ''}</span></div>
               <div className="mt-1 text-gray-400">Area size reflects city population</div>
+              {/* Metric-specific comparability warning, where one applies */}
+              {(() => {
+                const cfg = METRIC_CONFIG[selectedMetrics[0] as keyof typeof METRIC_CONFIG] as { caveat?: string } | undefined;
+                return cfg?.caveat ? (
+                  <div className="mt-1 text-amber-300">⚠ {cfg.caveat}</div>
+                ) : null;
+              })()}
             </div>
           </div>
         </div>
