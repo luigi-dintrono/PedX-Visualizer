@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useCallback, useMemo } from 'react';
+import { useEffect, useRef, useCallback, useMemo, useState } from 'react';
 import { useFilter } from '@/contexts/FilterContext';
 import { CityGlobeData, CityVideo } from '@/types/database';
 import type * as Cesium from 'cesium';
@@ -335,6 +335,13 @@ export default function Globe() {
   // exactly two labels (previous off, new on) instead of scanning all ~600 entities and
   // writing label.show on each — that scan ran ~60×/s and invalidated the scene constantly.
   const hoveredEntityRef = useRef<Cesium.Entity | null>(null);
+  // Optional overlay: the camera's estimated route through the city for localized videos.
+  // Toggling flips `show` on the already-built route entities instead of rebuilding the
+  // datasource, so it costs one requestRender rather than a refetch + repaint. The ref
+  // mirrors the state so createVideoMarkers reads the current value at creation time.
+  const [showRoutes, setShowRoutes] = useState(true);
+  const showRoutesRef = useRef(showRoutes);
+  useEffect(() => { showRoutesRef.current = showRoutes; }, [showRoutes]);
   // Refs mirroring the latest values used by the one-time init effect's
   // morphComplete listener, so it rebuilds with current (not stale) state.
   const selectedMetricsRef = useRef<string[]>([]);
@@ -1050,6 +1057,69 @@ export default function Globe() {
       // Only for videos with a REAL localized point (status 'ok'), not the city-centre fallback.
       const isLocalized = video.latitude != null && video.longitude != null && video.localization_status === 'ok';
       if (isLocalized) {
+        // The camera's estimated ROUTE through the city (visual odometry snapped to the OSM
+        // graph). These are walking-tour videos, so this is the path actually walked —
+        // drawn as a ground-clamped polyline with start/end caps. Optional: `show` starts
+        // from showRoutesRef and is flipped in place by the toggle effect below, so turning
+        // routes off never rebuilds the datasource.
+        const route = Array.isArray(video.localization_route) ? video.localization_route : [];
+        // Need at least two valid points to draw a line; guard each pair because the JSONB
+        // comes straight from an external estimator.
+        const routeDegrees: number[] = [];
+        for (const p of route) {
+          const rLat = Number(p?.[0]);
+          const rLon = Number(p?.[1]);
+          if (Number.isFinite(rLat) && Number.isFinite(rLon) && Math.abs(rLat) <= 90 && Math.abs(rLon) <= 180) {
+            routeDegrees.push(rLon, rLat); // Cesium takes lon,lat order
+          }
+        }
+        if (routeDegrees.length >= 4) {
+          const lengthM = video.localization_route_length_m;
+          videoDataSource.entities.add({
+            polyline: {
+              positions: Cesium.Cartesian3.fromDegreesArray(routeDegrees),
+              width: 4,
+              material: new Cesium.PolylineOutlineMaterialProperty({
+                color: Cesium.Color.fromCssColorString('#f97316').withAlpha(0.95),
+                outlineColor: Cesium.Color.BLACK.withAlpha(0.6),
+                outlineWidth: 1,
+              }),
+              clampToGround: true,
+              show: showRoutesRef.current,
+            },
+            properties: {
+              isRoute: true,
+              routeLabel: [
+                `${video.video_name || 'Video'} — estimated route`,
+                lengthM != null ? `${Math.round(lengthM)} m` : null,
+                video.localization_trajectory_source ? `source: ${video.localization_trajectory_source}` : null,
+                `${routeDegrees.length / 2} points`,
+              ].filter(Boolean).join(' · '),
+            },
+          });
+
+          // Start (green) and end (red) caps, so the direction of travel is readable.
+          const caps: Array<[number, number, string]> = [
+            [routeDegrees[0], routeDegrees[1], '#22c55e'],
+            [routeDegrees[routeDegrees.length - 2], routeDegrees[routeDegrees.length - 1], '#ef4444'],
+          ];
+          caps.forEach(([capLon, capLat, colour]) => {
+            videoDataSource.entities.add({
+              position: Cesium.Cartesian3.fromDegrees(capLon, capLat),
+              point: {
+                pixelSize: 7,
+                color: Cesium.Color.fromCssColorString(colour),
+                outlineColor: Cesium.Color.BLACK.withAlpha(0.7),
+                outlineWidth: 1,
+                heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+                disableDepthTestDistance: markerDepthTestDistance,
+                show: showRoutesRef.current,
+              },
+              properties: { isRoute: true },
+            });
+          });
+        }
+
         // Uncertainty disk (radius = confidence spread in metres), clamped to ground.
         if (video.localization_spread_m && video.localization_spread_m > 0) {
           const r = Math.min(video.localization_spread_m, 50000); // clamp huge low-confidence spreads
@@ -1562,6 +1632,34 @@ export default function Globe() {
     };
   }, [cityVideos, createVideoMarkers]);
 
+  // Route overlay toggle. Flips `show` on the route entities already in the datasource
+  // rather than re-running createVideoMarkers, so toggling costs one repaint and never
+  // refetches. Runs after the paint effect above, so entities exist by the time it fires.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      // `Cesium` is a type-only import at module scope; the runtime module comes from
+      // loadCesium(), same as every other effect here.
+      const CesiumRT = await loadCesium();
+      if (cancelled) return;
+      const viewer = viewerRef.current;
+      const ds = videoDataSourceRef.current;
+      if (!viewer || !ds) return;
+      let touched = false;
+      ds.entities.suspendEvents();
+      for (const entity of ds.entities.values) {
+        // properties is a PropertyBag; read the raw value (nothing here is time-varying).
+        if (entity.properties?.isRoute?.getValue?.() !== true) continue;
+        if (entity.polyline) entity.polyline.show = new CesiumRT.ConstantProperty(showRoutes);
+        if (entity.point) entity.point.show = new CesiumRT.ConstantProperty(showRoutes);
+        touched = true;
+      }
+      ds.entities.resumeEvents();
+      if (touched) viewer.scene.requestRender();
+    })();
+    return () => { cancelled = true; };
+  }, [showRoutes, cityVideos]);
+
   // Listen for globe reset event
   useEffect(() => {
     const resetGlobe = async () => {
@@ -1590,6 +1688,27 @@ export default function Globe() {
       />
       
       
+      {/* Route overlay toggle. Only offered when the selected city actually has a video
+          with an estimated route — most videos are city-centre fallbacks with none, and a
+          control that does nothing is worse than no control. */}
+      {cityVideos.some(v => Array.isArray(v.localization_route) && v.localization_route.length >= 2) && (
+        <div className="absolute bottom-4 left-4 bg-black/90 backdrop-blur-sm text-white px-3 py-2 rounded-lg text-sm shadow-lg">
+          <label className="flex items-center gap-2 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={showRoutes}
+              onChange={(e) => setShowRoutes(e.target.checked)}
+              className="accent-orange-500 cursor-pointer"
+            />
+            <span className="inline-block w-4 h-1 rounded bg-orange-500" aria-hidden="true" />
+            <span className="text-xs">Show video journeys</span>
+          </label>
+          <div className="text-[11px] text-gray-400 mt-1 pl-6">
+            Estimated camera route · <span className="text-green-400">start</span> → <span className="text-red-400">end</span>
+          </div>
+        </div>
+      )}
+
       {/* Heatmap Legend - moved to bottom right */}
       {selectedMetrics.length > 0 && (
         <div className="absolute bottom-4 right-4 bg-black/90 backdrop-blur-sm text-white p-4 rounded-lg text-sm shadow-lg max-w-xs">
