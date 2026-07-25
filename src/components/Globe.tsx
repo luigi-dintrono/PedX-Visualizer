@@ -1347,7 +1347,6 @@ export default function Globe() {
       // Error listeners to surface real provider/render errors in console
       try {
         viewer.scene.globe.terrainProvider.errorEvent.addEventListener((err: any) => {
-          // eslint-disable-next-line no-console
           console.error('Terrain provider error:', err);
         });
       } catch (_) {}
@@ -1356,7 +1355,6 @@ export default function Globe() {
         viewer.imageryLayers.layerAdded.addEventListener((layer: any) => {
           try {
             layer.imageryProvider?.errorEvent?.addEventListener((err: any) => {
-              // eslint-disable-next-line no-console
               console.error('Imagery provider error:', err);
             });
           } catch (_) {}
@@ -1365,7 +1363,6 @@ export default function Globe() {
 
       try {
         viewer.scene.renderError.addEventListener((err: any) => {
-          // eslint-disable-next-line no-console
           console.error('Scene render error:', err);
         });
       } catch (_) {}
@@ -1458,7 +1455,6 @@ export default function Globe() {
               await createHeatmapRef.current(data, activeMetrics[0], Cesium, setSelectedCity);
             }
           } catch (e) {
-            // eslint-disable-next-line no-console
             console.warn('Heatmap rebuild after morph failed:', e);
           }
         });
