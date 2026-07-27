@@ -526,6 +526,9 @@ export default function Globe() {
   // Sample-size gate: cities below their metric's minN are drawn as unranked rings. This
   // toggles their VISIBILITY only — never the threshold, which is a claim about measurement
   // precision rather than a preference. The ref is what createHeatmap reads at paint time.
+  // Flipped once the Cesium viewer exists, so the hover/click effect has something to
+  // depend on (assigning viewerRef does not re-render).
+  const [viewerReady, setViewerReady] = useState(false);
   const [showLowConfidence, setShowLowConfidence] = useState(true);
   const showLowConfidenceRef = useRef(showLowConfidence);
   useEffect(() => { showLowConfidenceRef.current = showLowConfidence; }, [showLowConfidence]);
@@ -1158,82 +1161,11 @@ export default function Globe() {
       established: scaleOk,
     });
 
-    // Remove any previously-registered hover/click handler before creating a new
-    // one. createHeatmap runs on every metric/filter change, so without this the
-    // ScreenSpaceEventHandlers leak and multiple duplicate listeners stack up.
-    if (heatmapHandlerRef.current) {
-      heatmapHandlerRef.current.destroy();
-      heatmapHandlerRef.current = null;
-    }
+    // Hover/click handling is NOT registered here — see the dedicated effect below.
+    // It used to live in this function, which meant the whole globe (routes, video
+    // markers, candidate dots, city selection) was unclickable whenever no metric was
+    // selected, because this function early-returns in that case.
 
-    // Add hover effects
-    const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
-    heatmapHandlerRef.current = handler;
-
-    handler.setInputAction((event: any) => {
-      const pickedObject = viewer.scene.pick(event.endPosition);
-      const pickedEntity: Cesium.Entity | null =
-        Cesium.defined(pickedObject) && pickedObject.id && pickedObject.id.label
-          ? pickedObject.id
-          : null;
-
-      // Only two labels can ever change per move: the previously hovered one and the new
-      // one. Skip all work (and re-renders) while hovering the same entity or empty space.
-      const prev = hoveredEntityRef.current;
-      if (prev === pickedEntity) return;
-      if (prev && prev.label) (prev.label.show as any) = false;
-      if (pickedEntity && pickedEntity.label) (pickedEntity.label.show as any) = true;
-      hoveredEntityRef.current = pickedEntity;
-      viewer.scene.requestRender();
-    }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
-
-    // Add click handler to select city or open video
-    handler.setInputAction((event: any) => {
-      const pickedObject = viewer.scene.pick(event.position);
-      
-      if (Cesium.defined(pickedObject) && pickedObject.id && pickedObject.id.properties) {
-        // Check if it's a video marker
-        const isVideo = pickedObject.id.properties.isVideo?.getValue();
-        if (isVideo) {
-          const videoLink = pickedObject.id.properties.videoLink?.getValue();
-          if (videoLink) {
-            // Construct YouTube URL: https://www.youtube.com/watch?v= + video link
-            const youtubeUrl = `https://www.youtube.com/watch?v=${videoLink}`;
-            // Open video URL in a new tab
-            window.open(youtubeUrl, '_blank', 'noopener,noreferrer');
-            return;
-          }
-        }
-
-        // Route polyline or one of its start/end caps → open the same video as its marker.
-        // Checked before the city fallback: routes are drawn over the city heatmap, so
-        // without this a click on the line would just re-select the city.
-        const isRoute = pickedObject.id.properties.isRoute?.getValue();
-        if (isRoute) {
-          const routeVideoLink = pickedObject.id.properties.videoLink?.getValue();
-          if (routeVideoLink) {
-            window.open(`https://www.youtube.com/watch?v=${routeVideoLink}`, '_blank', 'noopener,noreferrer');
-            return;
-          }
-        }
-
-        // Localization candidate marker → open its Google Maps location
-        const isCandidate = pickedObject.id.properties.isCandidate?.getValue();
-        if (isCandidate) {
-          const mapsUrl = pickedObject.id.properties.mapsUrl?.getValue();
-          if (mapsUrl) {
-            window.open(mapsUrl, '_blank', 'noopener,noreferrer');
-            return;
-          }
-        }
-        
-        // Otherwise, handle as city selection
-        const cityName = pickedObject.id.properties.city?.getValue();
-        if (cityName && onCityClick) {
-          onCityClick(cityName);
-        }
-      }
-    }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
   }, [getColorForMetric, videoDataSourceRef]);
 
@@ -1392,6 +1324,21 @@ export default function Globe() {
             video.localization_trajectory_source ? `source: ${video.localization_trajectory_source}` : null,
             'Click to open the video',
           ].filter(Boolean).join('\n');
+
+          // Wide, near-invisible hit target UNDER the visible line. A 4 px ground-clamped
+          // polyline is a hard thing to hit with a mouse; this gives the same click a
+          // ~16 px target without thickening the mark. Alpha is low but non-zero —
+          // fully transparent geometry is skipped by the pick pass.
+          videoDataSource.entities.add({
+            polyline: {
+              positions: Cesium.Cartesian3.fromDegreesArray(routeDegrees),
+              width: 16,
+              material: Cesium.Color.fromCssColorString(ROUTE_COLOUR).withAlpha(0.06),
+              clampToGround: true,
+              show: showRoutesRef.current,
+            },
+            properties: { isRoute: true, videoLink: video.link, routeLabel: routeText },
+          });
 
           videoDataSource.entities.add({
             polyline: {
@@ -1673,6 +1620,9 @@ export default function Globe() {
       (viewer.cesiumWidget.creditContainer as HTMLElement).style.display = "none";
 
       viewerRef.current = viewer;
+      // Signals the hover/click effect that the viewer exists. A ref assignment does not
+      // re-render, so without this the interaction effect has nothing to depend on.
+      setViewerReady(true);
 
       // Hide Columbus View (2.5D) option from the SceneModePicker UI robustly
       try {
@@ -2004,6 +1954,106 @@ export default function Globe() {
     ds.entities.resumeEvents();
     if (touched) viewer.scene.requestRender();
   }, [showLowConfidence, cityData, selectedMetrics]);
+
+  // Hover + click handling for EVERY entity on the globe: heatmap cities, video markers,
+  // route polylines and their caps, and localization candidates.
+  //
+  // This used to be registered inside createHeatmap, which early-returns when no metric is
+  // selected — so selecting a city to look at its routes (the natural way to reach them)
+  // left the globe with no ScreenSpaceEventHandler at all and nothing was clickable.
+  // Registered here against the viewer's lifetime instead, so interaction does not depend
+  // on whether a heatmap happens to be painted.
+  useEffect(() => {
+    if (!viewerReady || !viewerRef.current) return;
+    const viewer = viewerRef.current;
+    let handler: Cesium.ScreenSpaceEventHandler | null = null;
+    let cancelled = false;
+
+    (async () => {
+      const Cesium = await loadCesium();
+      if (cancelled || !viewerRef.current) return;
+
+      if (heatmapHandlerRef.current) {
+        heatmapHandlerRef.current.destroy();
+        heatmapHandlerRef.current = null;
+      }
+      handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+      heatmapHandlerRef.current = handler;
+
+      handler.setInputAction((event: any) => {
+        const pickedObject = viewer.scene.pick(event.endPosition);
+        const pickedEntity: Cesium.Entity | null =
+          Cesium.defined(pickedObject) && pickedObject.id && pickedObject.id.label
+            ? pickedObject.id
+            : null;
+
+        // Only two labels can ever change per move: the previously hovered one and the new
+        // one. Skip all work (and re-renders) while hovering the same entity or empty space.
+        const prev = hoveredEntityRef.current;
+        if (prev === pickedEntity) return;
+        if (prev && prev.label) (prev.label.show as any) = false;
+        if (pickedEntity && pickedEntity.label) (pickedEntity.label.show as any) = true;
+        hoveredEntityRef.current = pickedEntity;
+        viewer.scene.requestRender();
+      }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+
+      handler.setInputAction((event: any) => {
+        // drillPick, not pick: a route is drawn over the city's heatmap ellipse and its
+        // uncertainty disk, and plain pick returns only the topmost primitive — which is
+        // usually the ellipse, so the click fell through to "select this city" instead of
+        // opening the video. Walk the stack and take the first entity that is actionable.
+        const picks: any[] = viewer.scene.drillPick(event.position, 8) || [];
+        const single = viewer.scene.pick(event.position);
+        if (single && !picks.includes(single)) picks.unshift(single);
+
+        const prop = (p: any, k: string) => p?.id?.properties?.[k]?.getValue?.();
+
+        for (const p of picks) {
+          if (!Cesium.defined(p) || !p.id || !p.id.properties) continue;
+
+          const videoLink = prop(p, 'isVideo') ? prop(p, 'videoLink') : null;
+          if (videoLink) {
+            window.open(`https://www.youtube.com/watch?v=${videoLink}`, '_blank', 'noopener,noreferrer');
+            return;
+          }
+          // Route polyline or one of its start/end caps → open the same video as its marker.
+          if (prop(p, 'isRoute')) {
+            const routeLink = prop(p, 'videoLink');
+            if (routeLink) {
+              window.open(`https://www.youtube.com/watch?v=${routeLink}`, '_blank', 'noopener,noreferrer');
+              return;
+            }
+          }
+          // Localization candidate marker → open its Google Maps location
+          if (prop(p, 'isCandidate')) {
+            const mapsUrl = prop(p, 'mapsUrl');
+            if (mapsUrl) {
+              window.open(mapsUrl, '_blank', 'noopener,noreferrer');
+              return;
+            }
+          }
+        }
+
+        // Nothing actionable under the cursor: fall back to selecting the city, checked
+        // last so a route/marker click is never swallowed by the ellipse beneath it.
+        for (const p of picks) {
+          const cityName = prop(p, 'city');
+          if (cityName) {
+            setSelectedCity(cityName);
+            return;
+          }
+        }
+      }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+    })();
+
+    return () => {
+      cancelled = true;
+      if (handler) {
+        handler.destroy();
+        if (heatmapHandlerRef.current === handler) heatmapHandlerRef.current = null;
+      }
+    };
+  }, [viewerReady, setSelectedCity]);
 
   // Listen for globe reset event
   useEffect(() => {
