@@ -50,6 +50,42 @@ import { useFilter, GranularFilters } from "@/contexts/FilterContext"
 // Behavior metrics configuration
 const BEHAVIOR_METRICS = [
   {
+    value: 'measured_crossing_speed',
+    label: 'Measured Crossing Speed',
+    description: 'Measured, not imported; check sample size',
+    icon: Gauge,
+  },
+  {
+    value: 'look_before_cross',
+    label: 'Looked Before Crossing',
+    description: 'Head-scanning before stepping out',
+    icon: Shield,
+  },
+  {
+    value: 'severe_conflicts',
+    label: 'Severe PET Conflicts',
+    description: 'Near-miss surrogate safety measure',
+    icon: AlertTriangle,
+  },
+  {
+    value: 'hesitation_rate',
+    label: 'Hesitation Rate',
+    description: 'Mid-crossing stops',
+    icon: Activity,
+  },
+  {
+    value: 'vehicle_speed',
+    label: 'Vehicle Speed',
+    description: 'Measured traffic speed',
+    icon: Zap,
+  },
+  {
+    value: 'social_groups',
+    label: 'Social Groups',
+    description: 'Co-moving pedestrian groups',
+    icon: Users,
+  },
+  {
     value: 'risky_crossing',
     label: 'Risky Crossing Rate',
     description: 'Pedestrians crossing unsafely',

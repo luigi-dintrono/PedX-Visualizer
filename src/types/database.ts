@@ -178,6 +178,17 @@ export interface CityGlobeData {
   // avg_crossing_speed, which is an imported city-level constant. Sparse: NULL
   // for cities without dense-tracked videos (UI must show "no data", not 0).
   avg_measured_walking_speed: number | string | null;
+  // Novel behavioural insights measured by PedX-Insight (PET conflicts, head-scanning,
+  // hesitation, vehicle speed, social groups). Sparse: NULL for cities without
+  // dense-tracked videos, so the UI must render "no data" rather than 0.
+  avg_measured_crossing_speed: number | string | null;
+  avg_look_before_cross: number | string | null;
+  total_severe_conflicts: number | string | null;
+  avg_hesitation_rate: number | string | null;
+  avg_vehicle_speed: number | string | null;
+  total_social_groups: number | string | null;
+  measured_crossing_sample?: number | string | null;
+  cadence_sample?: number | string | null;
   avg_crossing_time: number | string | null;
   avg_road_width: number | string | null;
   traffic_mortality: number | string | null;

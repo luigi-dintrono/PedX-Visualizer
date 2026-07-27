@@ -65,6 +65,60 @@ function loadCesium(): Promise<typeof import('cesium')> {
 
 // Metric configuration for easy extensibility
 const METRIC_CONFIG = {
+  measured_crossing_speed: {
+    property: 'avg_measured_crossing_speed',
+    name: 'Measured Crossing Speed',
+    unit: 'm/s',
+    colorScale: {
+      min: [1, 0.35, 0, 0.6],
+      max: [0, 0.8, 0.4, 0.8],
+    },
+  },
+  look_before_cross: {
+    property: 'avg_look_before_cross',
+    name: 'Looked Before Crossing',
+    unit: '%',
+    colorScale: {
+      min: [1, 0, 0, 0.6],
+      max: [0, 1, 0, 0.8],
+    },
+  },
+  severe_conflicts: {
+    property: 'total_severe_conflicts',
+    name: 'Severe PET Conflicts',
+    unit: 'count',
+    colorScale: {
+      min: [0, 1, 0, 0.6],
+      max: [1, 0, 0, 0.8],
+    },
+  },
+  hesitation_rate: {
+    property: 'avg_hesitation_rate',
+    name: 'Hesitation Rate',
+    unit: '%',
+    colorScale: {
+      min: [0, 1, 0, 0.6],
+      max: [1, 0.5, 0, 0.8],
+    },
+  },
+  vehicle_speed: {
+    property: 'avg_vehicle_speed',
+    name: 'Vehicle Speed',
+    unit: 'm/s',
+    colorScale: {
+      min: [0, 1, 0, 0.6],
+      max: [1, 0, 0, 0.8],
+    },
+  },
+  social_groups: {
+    property: 'total_social_groups',
+    name: 'Social Groups',
+    unit: 'count',
+    colorScale: {
+      min: [0.2, 0.4, 1, 0.6],
+      max: [1, 0.8, 0, 0.8],
+    },
+  },
   risky_crossing: {
     property: 'risky_crossing_rate',
     name: 'Risky Crossing Rate',

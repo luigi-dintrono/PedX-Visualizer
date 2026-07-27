@@ -61,6 +61,60 @@ const METRIC_CONFIGS: Record<string, MetricConfig> = {
     rank_column: 'measured_walking_speed_rank',
     higher_is_better: true,
   },
+  measured_crossing_speed: {
+    name: 'Measured Crossing Speed',
+    unit: 'm/s',
+    description:
+      'Curb-to-curb crossing speed MEASURED from dense tracking, gated to camera-static intervals (PedX-Insight [S1]). Validates at ~1.4 m/s against the 1.2-1.5 m/s literature band. Unlike Crossing Speed, this is measured, not an imported city constant. Check the sample size: thin samples (n<5) are noisy.',
+    column_name: 'avg_measured_crossing_speed',
+    rank_column: null,
+    higher_is_better: true,
+  },
+  look_before_cross: {
+    name: 'Looked Before Crossing',
+    unit: '%',
+    description:
+      'Fraction of pose-tracked pedestrians who turned their head left or right before stepping into the road ([P12] head-scanning). A direct behavioural safety indicator no other metric captures.',
+    column_name: 'avg_look_before_cross',
+    rank_column: null,
+    higher_is_better: true,
+  },
+  severe_conflicts: {
+    name: 'Severe PET Conflicts',
+    unit: 'count',
+    description:
+      'Pedestrian-vehicle conflicts with a post-encroachment time under 1.5 s, counted only when the vehicle was actually moving ([I1]). A surrogate-safety measure: near-misses without needing a crash.',
+    column_name: 'total_severe_conflicts',
+    rank_column: null,
+    higher_is_better: false,
+  },
+  hesitation_rate: {
+    name: 'Hesitation Rate',
+    unit: '%',
+    description:
+      'Fraction of crossers who stopped mid-road at least once ([P11] micro-events) — the "curb dance" signature of an uncomfortable crossing.',
+    column_name: 'avg_hesitation_rate',
+    rank_column: null,
+    higher_is_better: false,
+  },
+  vehicle_speed: {
+    name: 'Vehicle Speed',
+    unit: 'm/s',
+    description:
+      'Median measured speed of tracked vehicles ([V8]). Vehicle speed is the strongest predictor of pedestrian fatality risk.',
+    column_name: 'avg_vehicle_speed',
+    rank_column: null,
+    higher_is_better: false,
+  },
+  social_groups: {
+    name: 'Social Groups',
+    unit: 'count',
+    description:
+      'Groups of pedestrians walking together, detected from sustained metric proximity and velocity alignment ([I2]). Group crossing behaviour differs markedly from solo.',
+    column_name: 'total_social_groups',
+    rank_column: null,
+    higher_is_better: null,
+  },
   crossing_time: {
     name: 'Crossing Time',
     unit: 's',
