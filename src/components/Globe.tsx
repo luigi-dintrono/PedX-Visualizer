@@ -965,6 +965,18 @@ export default function Globe() {
           }
         }
 
+        // Route polyline or one of its start/end caps → open the same video as its marker.
+        // Checked before the city fallback: routes are drawn over the city heatmap, so
+        // without this a click on the line would just re-select the city.
+        const isRoute = pickedObject.id.properties.isRoute?.getValue();
+        if (isRoute) {
+          const routeVideoLink = pickedObject.id.properties.videoLink?.getValue();
+          if (routeVideoLink) {
+            window.open(`https://www.youtube.com/watch?v=${routeVideoLink}`, '_blank', 'noopener,noreferrer');
+            return;
+          }
+        }
+
         // Localization candidate marker → open its Google Maps location
         const isCandidate = pickedObject.id.properties.isCandidate?.getValue();
         if (isCandidate) {
@@ -1129,39 +1141,46 @@ export default function Globe() {
         }
         if (routeDegrees.length >= 4) {
           const lengthM = video.localization_route_length_m;
+          // Violet, deliberately NOT the amber used for localization candidates (#f59e0b)
+          // or the blue used for the chosen point and its city-centre connector — three
+          // different things on one map need three readable colours.
+          const ROUTE_COLOUR = '#a855f7';
+          const routeText = [
+            `${video.video_name || 'Video'} — route walked`,
+            lengthM != null ? `${Math.round(lengthM)} m` : null,
+            `${routeDegrees.length / 2} points`,
+            video.localization_trajectory_source ? `source: ${video.localization_trajectory_source}` : null,
+            'Click to open the video',
+          ].filter(Boolean).join('\n');
+
           videoDataSource.entities.add({
             polyline: {
               positions: Cesium.Cartesian3.fromDegreesArray(routeDegrees),
               width: 4,
               material: new Cesium.PolylineOutlineMaterialProperty({
-                color: Cesium.Color.fromCssColorString('#f97316').withAlpha(0.95),
+                color: Cesium.Color.fromCssColorString(ROUTE_COLOUR).withAlpha(0.95),
                 outlineColor: Cesium.Color.BLACK.withAlpha(0.6),
                 outlineWidth: 1,
               }),
               clampToGround: true,
               show: showRoutesRef.current,
             },
-            properties: {
-              isRoute: true,
-              routeLabel: [
-                `${video.video_name || 'Video'} — estimated route`,
-                lengthM != null ? `${Math.round(lengthM)} m` : null,
-                video.localization_trajectory_source ? `source: ${video.localization_trajectory_source}` : null,
-                `${routeDegrees.length / 2} points`,
-              ].filter(Boolean).join(' · '),
-            },
+            // videoLink makes the line itself open the video, same as its marker.
+            properties: { isRoute: true, videoLink: video.link, routeLabel: routeText },
           });
 
           // Start (green) and end (red) caps, so the direction of travel is readable.
-          const caps: Array<[number, number, string]> = [
-            [routeDegrees[0], routeDegrees[1], '#22c55e'],
-            [routeDegrees[routeDegrees.length - 2], routeDegrees[routeDegrees.length - 1], '#ef4444'],
+          // They carry the hover label and the click target: a polyline has no position of
+          // its own, so a label on it would have nowhere to anchor.
+          const caps: Array<[number, number, string, string]> = [
+            [routeDegrees[0], routeDegrees[1], '#22c55e', 'start'],
+            [routeDegrees[routeDegrees.length - 2], routeDegrees[routeDegrees.length - 1], '#ef4444', 'end'],
           ];
-          caps.forEach(([capLon, capLat, colour]) => {
+          caps.forEach(([capLon, capLat, colour, which]) => {
             videoDataSource.entities.add({
               position: Cesium.Cartesian3.fromDegrees(capLon, capLat),
               point: {
-                pixelSize: 7,
+                pixelSize: 8,
                 color: Cesium.Color.fromCssColorString(colour),
                 outlineColor: Cesium.Color.BLACK.withAlpha(0.7),
                 outlineWidth: 1,
@@ -1169,7 +1188,21 @@ export default function Globe() {
                 disableDepthTestDistance: markerDepthTestDistance,
                 show: showRoutesRef.current,
               },
-              properties: { isRoute: true },
+              label: {
+                text: `${which === 'start' ? '▶ Start' : '■ End'} · ${routeText}`,
+                font: '11pt sans-serif',
+                fillColor: Cesium.Color.WHITE,
+                outlineColor: Cesium.Color.BLACK,
+                outlineWidth: 2,
+                style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+                pixelOffset: new Cesium.Cartesian2(0, -28),
+                show: false,
+                disableDepthTestDistance: markerDepthTestDistance,
+                backgroundColor: Cesium.Color.BLACK.withAlpha(0.7),
+                showBackground: true,
+                backgroundPadding: new Cesium.Cartesian2(8, 4),
+              },
+              properties: { isRoute: true, videoLink: video.link },
             });
           });
         }
@@ -1754,11 +1787,12 @@ export default function Globe() {
               onChange={(e) => setShowRoutes(e.target.checked)}
               className="accent-orange-500 cursor-pointer"
             />
-            <span className="inline-block w-4 h-1 rounded bg-orange-500" aria-hidden="true" />
+            <span className="inline-block w-4 h-1 rounded bg-purple-500" aria-hidden="true" />
             <span className="text-xs">Show video journeys</span>
           </label>
-          <div className="text-[11px] text-gray-400 mt-1 pl-6">
-            Estimated camera route · <span className="text-green-400">start</span> → <span className="text-red-400">end</span>
+          <div className="text-[11px] text-gray-400 mt-1 pl-6 space-y-0.5">
+            <div>Route walked · <span className="text-green-400">start</span> → <span className="text-red-400">end</span> · click to open video</div>
+            <div><span className="text-amber-400">●</span> amber = other candidate locations · blue dashes = offset from city centre</div>
           </div>
         </div>
       )}
