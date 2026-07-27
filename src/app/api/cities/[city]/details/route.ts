@@ -330,14 +330,19 @@ export async function GET(
           AVG(mean_red_exposure_s)                                AS mean_red_exposure_s,
           COUNT(anticipatory_start_frac)                          AS signal_videos,
 
-          AVG(hesitation_rate)                                    AS hesitation_rate,
-          AVG(aborted_start_rate)                                 AS aborted_start_rate,
-          SUM(evasive_event_count)                                AS evasive_events,
-          COUNT(hesitation_rate)                                  AS micro_event_videos,
+          -- dense_v2 only, matching v_city_summary and the globe. Folding legacy_1hz
+          -- videos into these means averaging a tracker the repo documents as fragmenting
+          -- and under-counting: New York is the one city in the corpus with both, and the
+          -- all-video mean (0.023) is 4.6x the dense-only mean (0.005), so the panel and
+          -- the map would state different hesitation rates for the same city.
+          AVG(hesitation_rate) FILTER (WHERE pipeline_version = 'dense_v2')  AS hesitation_rate,
+          AVG(aborted_start_rate) FILTER (WHERE pipeline_version = 'dense_v2') AS aborted_start_rate,
+          SUM(evasive_event_count) FILTER (WHERE pipeline_version = 'dense_v2') AS evasive_events,
+          COUNT(hesitation_rate) FILTER (WHERE pipeline_version = 'dense_v2') AS micro_event_videos,
 
-          SUM(n_social_groups)                                    AS social_groups,
-          SUM(grouped_pedestrians)                                AS grouped_pedestrians,
-          COUNT(n_social_groups)                                  AS social_videos,
+          SUM(n_social_groups) FILTER (WHERE pipeline_version = 'dense_v2')  AS social_groups,
+          SUM(grouped_pedestrians) FILTER (WHERE pipeline_version = 'dense_v2') AS grouped_pedestrians,
+          COUNT(n_social_groups) FILTER (WHERE pipeline_version = 'dense_v2') AS social_videos,
 
           AVG(look_before_cross_frac)                             AS look_before_cross_frac,
           AVG(looked_both_ways_frac)                              AS looked_both_ways_frac,

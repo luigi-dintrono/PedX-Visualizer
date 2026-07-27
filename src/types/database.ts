@@ -164,34 +164,49 @@ export interface CityGlobeData {
   continent: string;
   latitude: number | string;
   longitude: number | string;
-  population: number | string | null;
-  total_videos: number | string | null;
-  total_pedestrians: number | string | null;
-  risky_crossing_rate: number | string | null;
-  run_red_light_rate: number | string | null;
-  crosswalk_usage_rate: number | string | null;
-  phone_usage_rate: number | string | null;
-  avg_pedestrian_age: number | string | null;
-  avg_pedestrians_per_video: number | string | null;
-  avg_crossing_speed: number | string | null;
+  population?: number | string | null;
+  total_videos?: number | string | null;
+  total_pedestrians?: number | string | null;
+  risky_crossing_rate?: number | string | null;
+  run_red_light_rate?: number | string | null;
+  crosswalk_usage_rate?: number | string | null;
+  phone_usage_rate?: number | string | null;
+  avg_pedestrian_age?: number | string | null;
+  avg_pedestrians_per_video?: number | string | null;
+  avg_crossing_speed?: number | string | null;
   // MEASURED walking speed (m/s) from PedX-Insight dense tracking — unlike
   // avg_crossing_speed, which is an imported city-level constant. Sparse: NULL
   // for cities without dense-tracked videos (UI must show "no data", not 0).
-  avg_measured_walking_speed: number | string | null;
+  avg_measured_walking_speed?: number | string | null;
   // Novel behavioural insights measured by PedX-Insight (PET conflicts, head-scanning,
   // hesitation, vehicle speed, social groups). Sparse: NULL for cities without
   // dense-tracked videos, so the UI must render "no data" rather than 0.
-  avg_measured_crossing_speed: number | string | null;
-  avg_look_before_cross: number | string | null;
-  total_severe_conflicts: number | string | null;
-  avg_hesitation_rate: number | string | null;
-  avg_vehicle_speed: number | string | null;
-  total_social_groups: number | string | null;
+  avg_measured_crossing_speed?: number | string | null;
+  avg_look_before_cross?: number | string | null;
+  total_severe_conflicts?: number | string | null;
+  avg_hesitation_rate?: number | string | null;
+  avg_vehicle_speed?: number | string | null;
+  total_social_groups?: number | string | null;
   measured_crossing_sample?: number | string | null;
-  cadence_sample?: number | string | null;
-  avg_crossing_time: number | string | null;
-  avg_road_width: number | string | null;
-  traffic_mortality: number | string | null;
+  // Sample-size gates. METRIC_CONFIG[...].sample.property names one of these; a city whose
+  // sample is below sample.minN is drawn as an unranked ring and excluded from the colour
+  // ramp, so the scale is set by cities with enough evidence to rank.
+  age_sample?: number | string | null;
+  measured_walking_ped_sample?: number | string | null;
+  look_before_cross_sample?: number | string | null;
+  vehicle_speed_sample?: number | string | null;
+  pet_exposure_pedestrians?: number | string | null;
+  social_dense_pedestrians?: number | string | null;
+  hesitation_dense_pedestrians?: number | string | null;
+  // Exposure-normalised / dense-pipeline-only replacements for the raw sums above. The raw
+  // totals are kept purely as hover context.
+  severe_conflicts_per_100_ped?: number | string | null;
+  grouped_pedestrians_dense?: number | string | null;
+  grouped_pedestrian_share_dense?: number | string | null;
+  avg_hesitation_rate_dense?: number | string | null;
+  avg_crossing_time?: number | string | null;
+  avg_road_width?: number | string | null;
+  traffic_mortality?: number | string | null;
   // /api/cities only:
   videos_analyzed?: number | string | null;
   measured_speed_video_count?: number | string | null;

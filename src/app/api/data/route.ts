@@ -3,10 +3,22 @@ import { pool } from '@/lib/database';
 import { READ_CACHE_HEADERS } from '@/lib/http';
 
 // Columns served to the globe. Everything here is either paintable via METRIC_CONFIG
-// (rates, speeds, age, density, road width, traffic mortality) or shown in the hover
-// card (population, videos, pedestrians). Dropped vs the old SELECT: videos_analyzed
-// (duplicate of total_videos), the four video-level avg_*_ratio twins, risk_intensity,
-// literacy_rate, gini, measured_speed_video_count — nothing in the viewer read them.
+// (rates, speeds, age, density, road width, traffic mortality), used as a SAMPLE-SIZE
+// GATE for one of those metrics, or shown in the hover card (population, videos,
+// pedestrians). Dropped vs the old SELECT: videos_analyzed (duplicate of total_videos),
+// the four video-level avg_*_ratio twins, risk_intensity, literacy_rate, gini.
+//
+// Sample columns are NOT decoration: METRIC_CONFIG[...].sample.property names one of them,
+// and a city whose sample falls below sample.minN is drawn as an unranked ring and excluded
+// from the colour ramp. A metric whose sample column is missing here fails closed — every
+// city renders as a ring — so keep the two lists in step.
+//
+// measured_speed_video_count is still NOT served: measured live it is exactly 1 for all 14
+// cities that have it, so it cannot discriminate. measured_walking_ped_sample (2..358) is
+// the column that can, and it is served below.
+// cadence_sample was dropped: avg_cadence_hz is not in METRIC_CONFIG or DATA_COLUMNS, so it
+// gated nothing and cost ~607 rows of payload.
+//
 // DECIMAL columns are rounded and cast to float so they serialize as compact JSON
 // numbers instead of 15+ digit strings (roughly halves the per-row payload).
 const DATA_COLUMNS = (p: string) => `
@@ -27,7 +39,20 @@ const DATA_COLUMNS = (p: string) => `
           round(${p}avg_vehicle_speed::numeric, 4)::float AS avg_vehicle_speed,
           ${p}total_social_groups::int AS total_social_groups,
           ${p}measured_crossing_sample::int AS measured_crossing_sample,
-          ${p}cadence_sample::int AS cadence_sample,
+          -- Sample-size gates (see METRIC_CONFIG[...].sample)
+          ${p}age_sample::int AS age_sample,
+          ${p}measured_walking_ped_sample::int AS measured_walking_ped_sample,
+          ${p}look_before_cross_sample::int AS look_before_cross_sample,
+          ${p}vehicle_speed_sample::int AS vehicle_speed_sample,
+          ${p}pet_exposure_pedestrians::int AS pet_exposure_pedestrians,
+          ${p}social_dense_pedestrians::int AS social_dense_pedestrians,
+          ${p}hesitation_dense_pedestrians::int AS hesitation_dense_pedestrians,
+          -- Exposure-normalised / pipeline-filtered replacements for the raw sums. The raw
+          -- totals stay above purely as hover context ("647 conflicts across 3,438 tracked").
+          round(${p}severe_conflicts_per_100_ped::numeric, 2)::float AS severe_conflicts_per_100_ped,
+          ${p}grouped_pedestrians_dense::int AS grouped_pedestrians_dense,
+          round(${p}grouped_pedestrian_share_dense::numeric, 4)::float AS grouped_pedestrian_share_dense,
+          round(${p}avg_hesitation_rate_dense::numeric, 4)::float AS avg_hesitation_rate_dense,
           round(${p}avg_crossing_time::numeric, 2)::float AS avg_crossing_time,
           round(${p}avg_road_width::numeric, 2)::float AS avg_road_width,
           round(${p}risky_crossing_rate::numeric, 4)::float AS risky_crossing_rate,
@@ -439,15 +464,20 @@ export async function GET(request: NextRequest) {
           console.warn(`[API] Slow query detected: ${queryTime}ms - consider optimizing or adding indexes`);
         }
 
-        // Convert BigInt fields to Numbers (Neon compatibility)
+        // Convert BigInt fields to Numbers (Neon compatibility) and DROP null-valued keys.
+        //
+        // The insight and sample-gate columns are null for ~96% of cities (only 12-20 of
+        // 470 have any measured-behaviour data), so serialising them cost 245 KB of literal
+        // `"look_before_cross_sample":null` on every globe load — 53% of the payload, more
+        // than the gate columns added in the first place. Omitting the key is equivalent
+        // for every consumer: readNumber(), the METRIC_CONFIG property lookup and the hover
+        // card's num() all treat missing and null identically (undefined fails the same
+        // `!== null && !isNaN()` guard). The corresponding CityGlobeData fields are optional.
         const processedData = result.rows.map((row: any) => {
           const processed: any = {};
           for (const [key, value] of Object.entries(row)) {
-            if (typeof value === 'bigint') {
-              processed[key] = Number(value);
-            } else {
-              processed[key] = value;
-            }
+            if (value === null || value === undefined) continue;
+            processed[key] = typeof value === 'bigint' ? Number(value) : value;
           }
           return processed;
         });

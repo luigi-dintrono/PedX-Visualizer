@@ -52,7 +52,7 @@ const BEHAVIOR_METRICS = [
   {
     value: 'measured_crossing_speed',
     label: 'Measured Crossing Speed',
-    description: 'Measured, not imported; check sample size',
+    description: 'Measured from video; thin-sample cities shown as rings',
     icon: Gauge,
   },
   {
@@ -63,14 +63,14 @@ const BEHAVIOR_METRICS = [
   },
   {
     value: 'severe_conflicts',
-    label: 'Severe PET Conflicts',
-    description: 'Near-miss surrogate safety measure',
+    label: 'Severe Conflicts per 100 Pedestrians',
+    description: 'Near-miss rate per 100 pedestrians',
     icon: AlertTriangle,
   },
   {
     value: 'hesitation_rate',
     label: 'Hesitation Rate',
-    description: 'Mid-crossing stops',
+    description: 'Mid-crossing stops (dense-tracked videos only)',
     icon: Activity,
   },
   {
@@ -81,8 +81,8 @@ const BEHAVIOR_METRICS = [
   },
   {
     value: 'social_groups',
-    label: 'Social Groups',
-    description: 'Co-moving pedestrian groups',
+    label: 'Pedestrians Walking in Groups',
+    description: 'Share of pedestrians walking in groups',
     icon: Users,
   },
   {
@@ -112,7 +112,7 @@ const BEHAVIOR_METRICS = [
   {
     value: 'crossing_speed',
     label: 'Crossing Speed',
-    description: 'Average speed while crossing',
+    description: 'Imported city constant — not measured',
     icon: Gauge,
   },
   {

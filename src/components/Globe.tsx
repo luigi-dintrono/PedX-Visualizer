@@ -63,8 +63,33 @@ function loadCesium(): Promise<typeof import('cesium')> {
   return cesiumLoadPromise;
 }
 
+type Rgba = readonly [number, number, number, number];
+
+// A metric is RANKED for a city only when that city's `sample.property` value is >= minN.
+// Below that the city is still drawn — as a hollow ring, off the colour ramp — because it
+// does have a real number; it just has too little evidence to be positioned against others.
+// `sample` absent means no gate is available for this metric (see the per-entry notes).
+interface SampleRule {
+  property: string;   // column in the /api/data payload holding the denominator
+  minN: number;       // below this, the city is shown but not ranked
+  noun: string;       // what the n counts, for the hover and legend copy
+}
+interface MetricConfig {
+  property: string;
+  name: string;
+  unit: string;
+  colorScale: { min: Rgba; max: Rgba };
+  sample?: SampleRule;
+  caveat?: string;      // a limitation of the measurement
+  provenance?: string;  // where the number comes from, when it is not measured from video
+}
+
+// Below this many ranked cities there is no meaningful ramp to draw, so the whole layer
+// renders as rings and the legend says the scale is not established.
+const MIN_RANKED_CITIES = 5;
+
 // Metric configuration for easy extensibility
-const METRIC_CONFIG = {
+const METRIC_CONFIG: Record<string, MetricConfig> = {
   measured_crossing_speed: {
     property: 'avg_measured_crossing_speed',
     name: 'Measured Crossing Speed',
@@ -73,6 +98,11 @@ const METRIC_CONFIG = {
       min: [1, 0.35, 0, 0.6],
       max: [0, 0.8, 0.4, 0.8],
     },
+    // minN 10, not 30: a completed measured crossing is the scarcest unit in the corpus,
+    // and n>=30 leaves only 3 cities — too few to draw a ramp at all. At n=10 six of the
+    // twelve qualify and the domain tightens from 1.17-4.19 to 1.25-1.51.
+    sample: { property: 'measured_crossing_sample', minN: 10, noun: 'measured crossings' },
+    caveat: 'Half the cities with a value have too few crossings to rank',
   },
   look_before_cross: {
     property: 'avg_look_before_cross',
@@ -82,24 +112,36 @@ const METRIC_CONFIG = {
       min: [1, 0, 0, 0.6],
       max: [0, 1, 0, 0.8],
     },
+    sample: { property: 'look_before_cross_sample', minN: 30, noun: 'crossing pedestrians' },
   },
   severe_conflicts: {
-    property: 'total_severe_conflicts',
-    name: 'Severe PET Conflicts',
-    unit: 'count',
+    // Repointed from the raw sum to an exposure-normalised rate. The sum was an exposure
+    // map, not a danger map: Manila's 647 conflicts came from a 3,438-pedestrian video and
+    // Cincinnati's 2 from a 16-pedestrian one. Normalising flips the ranking — Sydney
+    // (27.6/100) now leads Manila (18.8/100).
+    property: 'severe_conflicts_per_100_ped',
+    name: 'Severe Conflicts per 100 Pedestrians',
+    unit: 'per 100 ped',
     colorScale: {
       min: [0, 1, 0, 0.6],
       max: [1, 0, 0, 0.8],
     },
+    sample: { property: 'pet_exposure_pedestrians', minN: 30, noun: 'tracked pedestrians' },
+    caveat: 'Conflicts per 100 tracked pedestrians, not a raw count',
   },
   hesitation_rate: {
-    property: 'avg_hesitation_rate',
+    // dense_v2 only: six cities were painted entirely from legacy_1hz videos with 2-6
+    // tracked pedestrians, all reporting ~0.000, and they anchored the bottom of the ramp
+    // with an artefact of a tracker the repo documents as fragmenting and under-counting.
+    property: 'avg_hesitation_rate_dense',
     name: 'Hesitation Rate',
     unit: '%',
     colorScale: {
       min: [0, 1, 0, 0.6],
       max: [1, 0.5, 0, 0.8],
     },
+    sample: { property: 'hesitation_dense_pedestrians', minN: 30, noun: 'tracked pedestrians' },
+    caveat: 'dense_v2 videos only; legacy-tracker cities are not shown',
   },
   vehicle_speed: {
     property: 'avg_vehicle_speed',
@@ -109,15 +151,21 @@ const METRIC_CONFIG = {
       min: [0, 1, 0, 0.6],
       max: [1, 0, 0, 0.8],
     },
+    sample: { property: 'vehicle_speed_sample', minN: 30, noun: 'tracked vehicles' },
+    caveat: 'Values are implausibly low (0.3-4.8 km/h) and under review',
   },
   social_groups: {
-    property: 'total_social_groups',
-    name: 'Social Groups',
-    unit: 'count',
+    // Repointed from the raw group count (an exposure map, same as conflicts) to the share
+    // of tracked pedestrians walking in company, dense_v2 only.
+    property: 'grouped_pedestrian_share_dense',
+    name: 'Pedestrians Walking in Groups',
+    unit: '%',
     colorScale: {
       min: [0.2, 0.4, 1, 0.6],
       max: [1, 0.8, 0, 0.8],
     },
+    sample: { property: 'social_dense_pedestrians', minN: 30, noun: 'tracked pedestrians' },
+    caveat: 'dense_v2 videos only; legacy-tracker cities are not shown',
   },
   risky_crossing: {
     property: 'risky_crossing_rate',
@@ -127,6 +175,10 @@ const METRIC_CONFIG = {
       min: [0, 1, 0, 0.6], // Green for low risk (RGBA)
       max: [1, 0, 0, 0.8], // Red for high risk (RGBA)
     },
+    // total_pedestrians IS the exact denominator of this rate. Without the gate, 302 of the
+    // 470 painted cities rest on 1-9 pedestrians and nine paint exactly 1.000 off a single
+    // one — the same defect as the crossing-speed layer, at 25x the scale.
+    sample: { property: 'total_pedestrians', minN: 30, noun: 'pedestrians' },
   },
   run_red_light: {
     property: 'run_red_light_rate',
@@ -136,6 +188,7 @@ const METRIC_CONFIG = {
       min: [0, 1, 0, 0.6], // Green for low rate
       max: [1, 0, 0, 0.8], // Red for high rate
     },
+    sample: { property: 'total_pedestrians', minN: 30, noun: 'pedestrians' },
   },
   crosswalk_usage: {
     property: 'crosswalk_usage_rate',
@@ -145,6 +198,7 @@ const METRIC_CONFIG = {
       min: [1, 0, 0, 0.6], // Red for low usage
       max: [0, 1, 0, 0.8], // Green for high usage
     },
+    sample: { property: 'total_pedestrians', minN: 30, noun: 'pedestrians' },
   },
   phone_usage: {
     property: 'phone_usage_rate',
@@ -154,6 +208,7 @@ const METRIC_CONFIG = {
       min: [0, 1, 0, 0.6], // Green for low usage
       max: [1, 0, 0, 0.8], // Red for high usage (dangerous)
     },
+    sample: { property: 'total_pedestrians', minN: 30, noun: 'pedestrians' },
   },
   crossing_speed: {
     property: 'avg_crossing_speed',
@@ -163,6 +218,10 @@ const METRIC_CONFIG = {
       min: [1, 0, 0, 0.6], // Red for slow (dangerous)
       max: [0, 1, 0, 0.8], // Green for fast (safer)
     },
+    // No gate: this is an imported city constant, so a count would count copies of the same
+    // number rather than observations. Its danger is the opposite of a thin sample — it
+    // looks well-sampled (564 cities) while measuring nothing about the video.
+    provenance: 'Imported city constant — see Measured Crossing Speed for the observed value',
   },
   measured_walking_speed: {
     // MEASURED from dense video tracking (PedX-Insight), not the imported city
@@ -175,6 +234,9 @@ const METRIC_CONFIG = {
       min: [1, 0, 0, 0.6], // Red for slow (dangerous)
       max: [0, 1, 0, 0.8], // Green for fast (safer)
     },
+    // Gated on the per-pedestrian count, not measured_speed_video_count: the latter is
+    // exactly 1 for all 14 cities that have it, so it cannot discriminate.
+    sample: { property: 'measured_walking_ped_sample', minN: 30, noun: 'tracked pedestrians' },
   },
   crossing_time: {
     property: 'avg_crossing_time',
@@ -184,6 +246,8 @@ const METRIC_CONFIG = {
       min: [0, 1, 0, 0.6], // Green for short time (safer)
       max: [1, 0, 0, 0.8], // Red for long time (more exposure)
     },
+    // No gate: imported constant, same as crossing_speed.
+    provenance: 'Imported city constant, not measured from video',
   },
   avg_age: {
     property: 'avg_pedestrian_age',
@@ -193,6 +257,7 @@ const METRIC_CONFIG = {
       min: [0.2, 0.6, 1, 0.6], // Blue for young
       max: [1, 0.6, 0.2, 0.8], // Orange for elderly
     },
+    sample: { property: 'age_sample', minN: 30, noun: 'pedestrians with a recorded age' },
   },
   pedestrian_density: {
     property: 'avg_pedestrians_per_video',
@@ -216,6 +281,9 @@ const METRIC_CONFIG = {
       min: [0, 1, 0, 0.6], // Green for narrow (safer)
       max: [1, 0, 0, 0.8], // Red for wide (more dangerous)
     },
+    // No n gate: 592 of 603 cities have exactly one video, so any video-count threshold
+    // would leave a handful of cities. The limitation is provenance, not sample size.
+    caveat: 'One camera view per city in 592 of 603 cities',
   },
   traffic_mortality: {
     property: 'traffic_mortality',
@@ -225,8 +293,11 @@ const METRIC_CONFIG = {
       min: [0, 1, 0, 0.6], // Green for low mortality
       max: [1, 0, 0, 0.8], // Red for high mortality
     },
+    // No gate: external reference data on 605 of 607 cities. A video-derived threshold
+    // would hide correct data.
+    provenance: 'External reference data (per 100k), not derived from video',
   },
-} as const;
+};
 
 // ---------------------------------------------------------------------------
 // Canvas caches. The heatmap used to allocate a fresh 256×256 gradient canvas +
@@ -262,6 +333,62 @@ function getDotCanvas(color: any): HTMLCanvasElement {
     dotCanvasCache.set(key, canvas);
   }
   return canvas;
+}
+
+// Mark for a city that has a value but too small a sample to rank: a hollow ring, so it
+// reads as "present but not placed on the scale" rather than as a ramp position.
+const LOW_CONFIDENCE_RGBA: Rgba = [0.82, 0.84, 0.88, 0.90];
+
+const ringCanvasCache = new Map<string, HTMLCanvasElement>();
+function getRingCanvas(color: any): HTMLCanvasElement {
+  const key = quantizeColorKey(color);
+  let canvas = ringCanvasCache.get(key);
+  if (!canvas) {
+    canvas = createRingCanvas(color);
+    ringCanvasCache.set(key, canvas);
+  }
+  return canvas;
+}
+
+function createRingCanvas(color: any): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = 20;
+  canvas.height = 20;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return canvas;
+  const css = `rgba(${Math.round((color?.red ?? 0.8) * 255)}, ${Math.round((color?.green ?? 0.8) * 255)}, ${Math.round((color?.blue ?? 0.9) * 255)}, ${color?.alpha ?? 0.9})`;
+  // Dark outer stroke first so the ring stays legible over bright terrain.
+  ctx.beginPath();
+  ctx.arc(10, 10, 8.5, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(15,23,42,0.55)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(10, 10, 7, 0, Math.PI * 2);
+  ctx.strokeStyle = css;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  return canvas;
+}
+
+// ONE normalisation, used by BOTH the colour ramp and the radius multiplier — they used to
+// compute it separately and the radius copy was unclamped and unguarded. Returns 0.5 for a
+// degenerate or non-finite domain: never NaN, never outside [0,1].
+function safeNormalize(v: number, min: number, max: number): number {
+  if (!Number.isFinite(v) || !Number.isFinite(min) || !Number.isFinite(max) || min === max) return 0.5;
+  return Math.max(0, Math.min(1, (v - min) / (max - min)));
+}
+
+function readNumber(item: any, prop: string): number | null {
+  const raw = item?.[prop];
+  if (raw === null || raw === undefined) return null;
+  const n = typeof raw === 'string' ? parseFloat(raw) : (raw as number);
+  return Number.isFinite(n) ? n : null;
+}
+
+// Rates and fractions are stored 0-1 but labelled '%'; printing them raw gave "0.89 %".
+function formatMetric(v: number, unit: string): string {
+  return unit === '%' ? `${(v * 100).toFixed(1)}%` : `${v.toFixed(2)} ${unit}`;
 }
 
 // Helper function to create radial gradient canvas for heatmap effect
@@ -396,6 +523,17 @@ export default function Globe() {
   const [showRoutes, setShowRoutes] = useState(true);
   const showRoutesRef = useRef(showRoutes);
   useEffect(() => { showRoutesRef.current = showRoutes; }, [showRoutes]);
+  // Sample-size gate: cities below their metric's minN are drawn as unranked rings. This
+  // toggles their VISIBILITY only — never the threshold, which is a claim about measurement
+  // precision rather than a preference. The ref is what createHeatmap reads at paint time.
+  const [showLowConfidence, setShowLowConfidence] = useState(true);
+  const showLowConfidenceRef = useRef(showLowConfidence);
+  useEffect(() => { showLowConfidenceRef.current = showLowConfidence; }, [showLowConfidence]);
+  // Published by createHeatmap so the legend can state the actual domain and how many
+  // cities were ranked, instead of implying the ramp spans everything painted.
+  const [scaleInfo, setScaleInfo] = useState<{
+    metric: string; ranked: number; total: number; min: number; max: number; established: boolean;
+  } | null>(null);
   // Refs mirroring the latest values used by the one-time init effect's
   // morphComplete listener, so it rebuilds with current (not stale) state.
   const selectedMetricsRef = useRef<string[]>([]);
@@ -658,15 +796,25 @@ export default function Globe() {
       return Cesium.Color.BLUE.withAlpha(0.6);
     }
 
-    // Validate min/max values to prevent division by zero
-    if (isNaN(minValue) || isNaN(maxValue) || minValue === maxValue) {
-      // If all values are the same, use the middle color
-      const midColor = config.colorScale.min;
-      return new Cesium.Color(midColor[0], midColor[1], midColor[2], midColor[3]);
+    // Degenerate or non-finite domain. Number.isFinite (not isNaN) because an empty ranked
+    // set yields Math.min(...[]) === +Infinity, which isNaN lets through — that fell into
+    // the normalisation below and silently painted every city the LOW-end colour, which
+    // looks like real data. Also returns the MIDDLE colour, as the original comment
+    // promised; it used to return colorScale.min, i.e. "worst in the world".
+    if (!Number.isFinite(minValue) || !Number.isFinite(maxValue) || minValue === maxValue) {
+      const t = 0.5;
+      const lo = config.colorScale.min;
+      const hi = config.colorScale.max;
+      return new Cesium.Color(
+        lo[0] + (hi[0] - lo[0]) * t,
+        lo[1] + (hi[1] - lo[1]) * t,
+        lo[2] + (hi[2] - lo[2]) * t,
+        lo[3] + (hi[3] - lo[3]) * t,
+      );
     }
 
     // Normalize value to 0-1 range
-    const normalizedValue = Math.max(0, Math.min(1, (value - minValue) / (maxValue - minValue)));
+    const normalizedValue = safeNormalize(value, minValue, maxValue);
     
     // Interpolate between min and max colors
     const minColor = config.colorScale.min;
@@ -739,23 +887,60 @@ export default function Globe() {
     };
 
     if (validData.length === 0) {
+      // Silent blank globes are the hardest failure to diagnose here: a METRIC_CONFIG
+      // property missing from DATA_COLUMNS yields undefined, which passes `!== null` and
+      // fails isNaN, so the layer just disappears with no error anywhere.
+      console.warn(`[Globe] metric ${metricType}: no city has a value for '${config.property}' under the current filters`);
       clearAll();
+      // MUST publish before returning: otherwise the legend keeps the PREVIOUS paint's
+      // "Scale: 1.25 – 1.51 across 6 cities" hanging over a globe with nothing on it, and
+      // the metric name matches so the staleness check does not catch it.
+      setScaleInfo({ metric: metricType, ranked: 0, total: 0, min: NaN, max: NaN, established: false });
       return;
     }
 
-    // Calculate min/max values for color scaling
-    const values = validData.map(item => {
-      const rawValue = (item as any)[config.property];
-      return typeof rawValue === 'string' ? parseFloat(rawValue) : rawValue;
-    }).filter(v => v !== null && !isNaN(v));
+    // ---- Sample-size gate -------------------------------------------------------------
+    // A city is RANKED only when its sample column is at or above the metric's minN.
+    // Unranked cities are still painted (they have a real number) but as rings, and they
+    // are excluded from the colour domain so one 3-crosser city cannot define the ramp for
+    // everyone else. Everything here runs BEFORE entities.suspendEvents() below — an early
+    // return after that call would leave the EntityCollection suspended and freeze the globe.
+    const rule = config.sample;
+    const sampleOf = (it: any): number | null => (rule ? readNumber(it, rule.property) : null);
+    // "Clears the evidence bar" — a property of the CITY.
+    const meetsBar = (it: any): boolean => {
+      if (!rule) return true;                    // no gate available for this metric
+      const n = sampleOf(it);
+      return n !== null && n >= rule.minN;       // fail closed: unknown sample => not ranked
+    };
 
-    if (values.length === 0) {
-      clearAll();
-      return;
+    const rankedData = validData.filter(meetsBar);
+    // "There are enough qualifying cities to draw a ramp at all" — a property of the LAYER,
+    // and deliberately NOT applied to ungated metrics. Conflating the two meant an ungated
+    // layer filtered down to <5 cities (traffic_mortality is external reference data on 605
+    // cities, crossing_speed on 564) rendered every city as an unranked ring captioned
+    // "no city has enough data", which is false: those metrics have no evidence bar to fail.
+    const scaleOk = rule ? rankedData.length >= MIN_RANKED_CITIES : validData.length > 0;
+
+    // Single pass, not Math.min(...values): the API allows up to 10000 rows and spreading
+    // that many arguments can blow the stack.
+    let minValue = NaN;
+    let maxValue = NaN;
+    if (scaleOk) {
+      minValue = Infinity;
+      maxValue = -Infinity;
+      for (const it of rankedData) {
+        const v = readNumber(it, config.property);
+        if (v === null) continue;
+        if (v < minValue) minValue = v;
+        if (v > maxValue) maxValue = v;
+      }
+    } else if (rule) {
+      console.warn(
+        `[Globe] metric ${metricType}: ${validData.length} cities have a value, ` +
+        `${rankedData.length} reach n>=${rule.minN} ${rule.noun} — scale not established, all shown as rings`
+      );
     }
-    
-    const minValue = Math.min(...values);
-    const maxValue = Math.max(...values);
 
     // Billboard/label settings depend on the scene mode (the morphComplete handler adjusts
     // EXISTING entities on morph; entities created while already in 2D must match).
@@ -783,25 +968,40 @@ export default function Globe() {
     validData.forEach(item => {
       const rawValue = (item as any)[config.property];
       const value = typeof rawValue === 'string' ? parseFloat(rawValue) : rawValue;
-      const color = getColorForMetric(value, metricType, minValue, maxValue, Cesium);
-      const colorKey = quantizeColorKey(color);
+      // Two distinct facts, kept separate: does THIS city clear the bar, and does the LAYER
+      // have a ramp to place it on. A city can clear the bar and still not be ranked when
+      // too few of its peers did — and it must not then be captioned as thin-sampled.
+      const passesBar = meetsBar(item);
+      const ranked = passesBar && scaleOk;
+      const t = ranked ? safeNormalize(value, minValue, maxValue) : 0;
+      const color = ranked
+        ? getColorForMetric(value, metricType, minValue, maxValue, Cesium)
+        : new Cesium.Color(...LOW_CONFIDENCE_RGBA);
+      // Composite key: this is both the canvas-cache key and the entity dirty-check, and a
+      // ranked and an unranked city can share an RGBA while needing different TEXTURES
+      // (filled dot vs hollow ring). Without the variant suffix the cache serves the wrong
+      // sprite after a metric switch.
+      const styleKey = `${quantizeColorKey(color)}|${ranked ? 'r' : 'lc'}`;
 
       // Scale ellipse size based on city population (or default if not available)
       const population = typeof item.population === 'string' ? parseFloat(item.population) : item.population;
 
-      // Calculate radius in meters based on population
-      // Formula: sqrt(population / π) with scaling factor for visibility
+      // Radius: population-based, then a small intensity nudge for ranked cities only.
+      // The multiplier is applied BEFORE the clamp (it used to be applied after, so a value
+      // outside the domain escaped the 3-50 km bound), and `t` is reused rather than
+      // recomputing an unclamped copy of the normalisation — that copy produced 0/0 = NaN
+      // whenever exactly one city had a value, and because NaN !== NaN the change-detect
+      // below then rewrote both axes on every subsequent repaint forever.
       let radiusMeters = 5000; // Default 5km for unknown population
-      if (population && !isNaN(population) && population > 0) {
+      if (Number.isFinite(population as number) && (population as number) > 0) {
         // Scale: 1M people = ~10km radius, 10M = ~30km radius
-        radiusMeters = Math.sqrt(population / Math.PI) * 3;
-        radiusMeters = Math.max(3000, Math.min(radiusMeters, 50000)); // Clamp between 3-50km
+        radiusMeters = Math.sqrt((population as number) / Math.PI) * 3;
       }
-
-      // Intensity-based size modifier (higher values = slightly larger)
-      const normalizedValue = (value - minValue) / (maxValue - minValue);
-      const intensityMultiplier = 0.8 + (normalizedValue * 0.4); // 0.8 to 1.2 range
-      radiusMeters *= intensityMultiplier;
+      if (ranked) radiusMeters *= 0.8 + t * 0.4; // 0.8 to 1.2 range
+      radiusMeters = Math.max(3000, Math.min(50000, radiusMeters));
+      // A NaN or negative semiMajorAxis raises a Cesium DeveloperError inside the render
+      // loop, which freezes the globe rather than failing visibly.
+      if (!Number.isFinite(radiusMeters) || radiusMeters <= 0) radiusMeters = 5000;
 
       // Hover card: the selected metric plus the other columns /api/data serves
       // (population, sample sizes, age, speed, WHO-style traffic mortality).
@@ -814,12 +1014,28 @@ export default function Globe() {
         avgAge != null ? `avg age ${avgAge.toFixed(1)}` : null,
         speed != null ? `crossing speed ${speed.toFixed(2)} m/s` : null,
       ].filter(Boolean).join(' · ');
+      // Evidence line: how much data backs THIS metric for THIS city. Distinct from the
+      // "City totals" line below, which is the city's whole corpus — that line used to be
+      // labelled "Sample:", which manufactured confidence in the worst point on the layer.
+      const sampleN = sampleOf(item);
+      const evidenceLine = !rule
+        ? (config.provenance ? `Source: ${config.provenance}` : null)
+        : sampleN === null
+          ? '⚠ Sample size unknown — not ranked'
+          : !passesBar
+            ? `⚠ Only ${sampleN.toLocaleString()} ${rule.noun} — too few to rank (need ${rule.minN})`
+            : ranked
+              ? `Based on ${sampleN.toLocaleString()} ${rule.noun}`
+              // Clears the bar, but too few peers did to form a scale. Saying "too few to
+              // rank" here would tell a city with n=86 that 86 is fewer than 10.
+              : `Based on ${sampleN.toLocaleString()} ${rule.noun} — no scale: only ${rankedData.length} cit${rankedData.length === 1 ? 'y' : 'ies'} qualify`;
       const labelText = [
         `${item.city}, ${item.country}`,
-        `${config.name}: ${value?.toFixed(2)} ${config.unit}`,
+        `${config.name}: ${formatMetric(value, config.unit)}`,
+        evidenceLine,
         population ? `Population: ${population.toLocaleString()}` : null,
         totalVideos != null && totalPeds != null
-          ? `Sample: ${totalVideos} video${totalVideos === 1 ? '' : 's'} · ${totalPeds.toLocaleString()} pedestrians`
+          ? `City totals: ${totalVideos} video${totalVideos === 1 ? '' : 's'} · ${totalPeds.toLocaleString()} pedestrians`
           : null,
         contextLine || null,
         mortality != null ? `Traffic mortality: ${mortality.toFixed(1)} per 100k` : null,
@@ -833,13 +1049,16 @@ export default function Globe() {
         // Update in place; touch the GPU-backed material/billboard only on a real
         // color change, and the ellipse axes only on a real radius change.
         const props: any = existing.properties;
-        if (props?.colorKey?.getValue() !== colorKey) {
+        if (props?.colorKey?.getValue() !== styleKey) {
           existing.ellipse!.material = new Cesium.ImageMaterialProperty({
             image: getGradientCanvas(color),
             transparent: true,
           }) as any;
-          (existing.billboard as any).image = getDotCanvas(color);
-          props.colorKey = colorKey;
+          // Unranked cities get the ring sprite and no gradient halo — the halo reads as a
+          // ramp position, which is exactly the claim we are declining to make.
+          (existing.billboard as any).image = ranked ? getDotCanvas(color) : getRingCanvas(color);
+          (existing.ellipse as any).show = ranked;
+          props.colorKey = styleKey;
         }
         if (props?.radiusMeters?.getValue() !== radiusMeters) {
           (existing.ellipse as any).semiMinorAxis = radiusMeters;
@@ -849,18 +1068,22 @@ export default function Globe() {
         (existing.label as any).text = labelText;
         props.metricValue = value;
         props.metricType = metricType;
+        props.lowConfidence = !passesBar;
+        existing.show = passesBar || showLowConfidenceRef.current;
         return;
       }
 
       // Create main ellipse (city coverage area)
       entities.add({
         id: entityId,
+        show: passesBar || showLowConfidenceRef.current,
         position: Cesium.Cartesian3.fromDegrees(
           typeof item.longitude === 'string' ? parseFloat(item.longitude) : item.longitude!,
           typeof item.latitude === 'string' ? parseFloat(item.latitude) : item.latitude!,
           30 // lift slightly above ground to avoid terrain clipping
         ),
         ellipse: {
+          show: ranked,
           semiMinorAxis: radiusMeters,
           semiMajorAxis: radiusMeters,
           material: new Cesium.ImageMaterialProperty({
@@ -872,7 +1095,7 @@ export default function Globe() {
         },
         // Central marker (billboard) for better visibility and to avoid terrain clipping
         billboard: {
-          image: getDotCanvas(color),
+          image: ranked ? getDotCanvas(color) : getRingCanvas(color),
           scale: 1.0,
           heightReference: billboardHeightReference,
           // Pull forward in eye space to avoid local terrain clipping while still occluding behind globe
@@ -902,7 +1125,12 @@ export default function Globe() {
           metricValue: value,
           metricType: metricType,
           radiusMeters: radiusMeters,
-          colorKey: colorKey,
+          colorKey: styleKey,
+          // MUST be declared at creation. Cesium's PropertyBag only registers accessors for
+          // keys present when the entity is built; a key first assigned during an update
+          // becomes a plain expando that getValue() cannot read — which would not reproduce
+          // on first load, only after a metric switch.
+          lowConfidence: !passesBar,
         }
       });
     });
@@ -917,6 +1145,18 @@ export default function Globe() {
     entities.resumeEvents();
     // requestRenderMode: paint the updated heatmap now (datasource was attached on creation).
     viewer.scene.requestRender();
+
+    // Publish what the legend needs to describe the ramp honestly. setScaleInfo is a stable
+    // setter, so this does NOT belong in createHeatmap's dep array — adding it there would
+    // recreate the callback and re-trigger the repaint effect on every paint.
+    setScaleInfo({
+      metric: metricType,
+      ranked: rankedData.length,
+      total: validData.length,
+      min: minValue,
+      max: maxValue,
+      established: scaleOk,
+    });
 
     // Remove any previously-registered hover/click handler before creating a new
     // one. createHeatmap runs on every metric/filter change, so without this the
@@ -1747,6 +1987,24 @@ export default function Globe() {
     return () => { cancelled = true; };
   }, [showRoutes, cityVideos]);
 
+  // Low-confidence visibility toggle. Flips `show` on the ring entities already in the
+  // heatmap datasource rather than repainting — one requestRender, no refetch, and no dep
+  // threading into createHeatmap (which would recreate it and cause a full repaint loop).
+  useEffect(() => {
+    const viewer = viewerRef.current;
+    const ds = dataSourceRef.current;
+    if (!viewer || !ds) return;
+    let touched = false;
+    ds.entities.suspendEvents();
+    for (const entity of ds.entities.values) {
+      if (entity.properties?.lowConfidence?.getValue?.() !== true) continue;
+      entity.show = showLowConfidence;
+      touched = true;
+    }
+    ds.entities.resumeEvents();
+    if (touched) viewer.scene.requestRender();
+  }, [showLowConfidence, cityData, selectedMetrics]);
+
   // Listen for globe reset event
   useEffect(() => {
     const resetGlobe = async () => {
@@ -1803,30 +2061,104 @@ export default function Globe() {
           <div className="font-semibold mb-3 text-base">
             🗺️ {METRIC_CONFIG[selectedMetrics[0] as keyof typeof METRIC_CONFIG]?.name || selectedMetrics[0]}
           </div>
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-2">
-                <div className="w-5 h-5 bg-green-500/70 rounded-full blur-sm"></div>
-                <span className="text-xs">Low</span>
+          {(() => {
+            const cfg = METRIC_CONFIG[selectedMetrics[0]];
+            if (!cfg) return null;
+            const rule = cfg.sample;
+            const info = scaleInfo && scaleInfo.metric === selectedMetrics[0] ? scaleInfo : null;
+            const rgba = (c: Rgba) => `rgba(${Math.round(c[0] * 255)},${Math.round(c[1] * 255)},${Math.round(c[2] * 255)},${c[3]})`;
+            const lo = rgba(cfg.colorScale.min);
+            const hi = rgba(cfg.colorScale.max);
+            const established = info ? info.established : true;
+            const fmt = (v: number) => cfg.unit === '%' ? `${(v * 100).toFixed(1)}%` : v.toFixed(2);
+
+            return (
+              <div className="space-y-2">
+                {established ? (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs">Low</span>
+                      {/* Rendered FROM config.colorScale. It used to be a hardcoded
+                          green→yellow→red bar that matched almost no metric — on this very
+                          layer the ramp runs orange→green, so the legend was inverted. */}
+                      <div
+                        className="w-24 h-3 rounded-full opacity-90"
+                        style={{ backgroundImage: `linear-gradient(to right, ${lo}, ${hi})` }}
+                      />
+                      <span className="text-xs">High</span>
+                    </div>
+                    {info && Number.isFinite(info.min) && Number.isFinite(info.max) && (
+                      <div className="text-xs text-gray-300">
+                        Scale: {fmt(info.min)} – {fmt(info.max)} across {info.ranked} cit{info.ranked === 1 ? 'y' : 'ies'}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="text-xs text-amber-300">
+                    {(info?.total ?? 0) === 0 ? (
+                      <div className="font-medium">No city has a value for this metric under the current filters</div>
+                    ) : (
+                      <>
+                        <div className="font-medium">Not enough cities to rank on this metric</div>
+                        {rule && (
+                          <div className="text-gray-400 mt-1">
+                            Needs at least {rule.minN} {rule.noun} per city, and at least {MIN_RANKED_CITIES} such
+                            cities to form a scale — {info?.total ?? 0} cit
+                            {(info?.total ?? 0) === 1 ? 'y has' : 'ies have'} a value, {info?.ranked ?? 0} qualif
+                            {(info?.ranked ?? 0) === 1 ? 'ies' : 'y'}.
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
+
+                <div className="text-xs text-gray-300 pt-2 border-t border-gray-600">
+                  <div>Unit: <span className="font-mono">{cfg.unit}</span></div>
+                  <div className="mt-1 text-gray-400">Area size reflects city population</div>
+
+                  {/* Ring = has a value, too little evidence to place on the scale. */}
+                  {rule && info && info.total > info.ranked && (
+                    <div className="mt-2 pt-2 border-t border-gray-700">
+                      <label className="flex items-start gap-2 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={showLowConfidence}
+                          onChange={(e) => setShowLowConfidence(e.target.checked)}
+                          className="accent-slate-300 cursor-pointer mt-0.5"
+                        />
+                        <span
+                          className="inline-block w-3.5 h-3.5 rounded-full border-2 shrink-0 mt-0.5"
+                          style={{ borderColor: rgba(LOW_CONFIDENCE_RGBA) }}
+                          aria-hidden="true"
+                        />
+                        <span className="text-xs">
+                          Low confidence — under {rule.minN} {rule.noun}
+                        </span>
+                      </label>
+                      <div className="text-[11px] text-gray-400 mt-1 pl-6">
+                        Shown as a ring: not coloured, not ranked. Hover for the count.
+                        <br />
+                        {/* info.ranked counts cities that CLEAR the bar, which is not the
+                            same as cities actually ranked: when too few clear it, the layer
+                            has no scale and NOTHING is ranked. Saying "3 of 5 are ranked"
+                            over a globe of five rings contradicts both the map and the amber
+                            block directly above. Filtering to North America on this metric
+                            reaches that state (5 cities have a value, 3 clear n>=10). */}
+                        {established
+                          ? `${info.ranked} of ${info.total} cities with a value are ranked`
+                          : `${info.ranked} of ${info.total} cities clear the bar — too few to form a scale, so none are ranked`}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Metric-specific comparability warning / provenance, where one applies */}
+                  {cfg.caveat && <div className="mt-2 text-amber-300">⚠ {cfg.caveat}</div>}
+                  {cfg.provenance && <div className="mt-2 text-gray-400">Source: {cfg.provenance}</div>}
+                </div>
               </div>
-              <div className="w-24 h-3 bg-gradient-to-r from-green-500 via-yellow-500 to-red-500 rounded-full opacity-70"></div>
-              <div className="flex items-center space-x-2">
-                <span className="text-xs">High</span>
-                <div className="w-5 h-5 bg-red-500/70 rounded-full blur-sm"></div>
-              </div>
-            </div>
-            <div className="text-xs text-gray-300 pt-2 border-t border-gray-600">
-              <div>Unit: <span className="font-mono">{METRIC_CONFIG[selectedMetrics[0] as keyof typeof METRIC_CONFIG]?.unit || ''}</span></div>
-              <div className="mt-1 text-gray-400">Area size reflects city population</div>
-              {/* Metric-specific comparability warning, where one applies */}
-              {(() => {
-                const cfg = METRIC_CONFIG[selectedMetrics[0] as keyof typeof METRIC_CONFIG] as { caveat?: string } | undefined;
-                return cfg?.caveat ? (
-                  <div className="mt-1 text-amber-300">⚠ {cfg.caveat}</div>
-                ) : null;
-              })()}
-            </div>
-          </div>
+            );
+          })()}
         </div>
       )}
     </div>

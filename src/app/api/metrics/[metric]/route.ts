@@ -9,6 +9,11 @@ interface MetricConfig {
   column_name: string;
   rank_column: string | null;
   higher_is_better: boolean | null;
+  // Minimum evidence to appear in this leaderboard, mirroring METRIC_CONFIG[...].sample in
+  // src/components/Globe.tsx. Without it the sidebar ranks cities the map explicitly
+  // refuses to rank — it led with Milan at 4.19 m/s on n=3 while the map drew Milan as an
+  // unranked ring. Keep the two in step: same column, same minN.
+  sample?: { property: string; minN: number };
 }
 
 const METRIC_CONFIGS: Record<string, MetricConfig> = {
@@ -17,6 +22,7 @@ const METRIC_CONFIGS: Record<string, MetricConfig> = {
     unit: '%',
     description: 'Percentage of pedestrians crossing in unsafe conditions without proper precautions',
     column_name: 'avg_risky_crossing_ratio',
+    sample: { property: 'pedestrian_count', minN: 30 },
     rank_column: 'risky_rank',
     higher_is_better: false,
   },
@@ -25,6 +31,7 @@ const METRIC_CONFIGS: Record<string, MetricConfig> = {
     unit: '%',
     description: 'Percentage of pedestrians ignoring traffic signals and crossing against red lights',
     column_name: 'avg_run_red_light_ratio',
+    sample: { property: 'pedestrian_count', minN: 30 },
     rank_column: 'red_light_rank',
     higher_is_better: false,
   },
@@ -33,6 +40,7 @@ const METRIC_CONFIGS: Record<string, MetricConfig> = {
     unit: '%',
     description: 'Percentage of pedestrians using designated crosswalks when available',
     column_name: 'avg_crosswalk_usage_ratio',
+    sample: { property: 'pedestrian_count', minN: 30 },
     rank_column: 'crosswalk_usage_rank',
     higher_is_better: true,
   },
@@ -41,6 +49,7 @@ const METRIC_CONFIGS: Record<string, MetricConfig> = {
     unit: '%',
     description: 'Percentage of pedestrians distracted by mobile phones while crossing',
     column_name: 'phone_usage_ratio',
+    sample: { property: 'pedestrian_count', minN: 30 },
     rank_column: null,
     higher_is_better: false,
   },
@@ -58,6 +67,7 @@ const METRIC_CONFIGS: Record<string, MetricConfig> = {
     description:
       'Walking speed MEASURED from dense pedestrian tracking in the videos (PedX-Insight [S1]) — unlike Crossing Speed, which is an imported city-level constant. Only cities with dense-tracked videos have values.',
     column_name: 'avg_measured_walking_speed',
+    sample: { property: 'measured_walking_ped_sample', minN: 30 },
     rank_column: 'measured_walking_speed_rank',
     higher_is_better: true,
   },
@@ -65,8 +75,9 @@ const METRIC_CONFIGS: Record<string, MetricConfig> = {
     name: 'Measured Crossing Speed',
     unit: 'm/s',
     description:
-      'Curb-to-curb crossing speed MEASURED from dense tracking, gated to camera-static intervals (PedX-Insight [S1]). Validates at ~1.4 m/s against the 1.2-1.5 m/s literature band. Unlike Crossing Speed, this is measured, not an imported city constant. Check the sample size: thin samples (n<5) are noisy.',
+      'Curb-to-curb crossing speed MEASURED from dense tracking, gated to camera-static intervals (PedX-Insight [S1]). Validates at ~1.4 m/s against the 1.2-1.5 m/s literature band. Unlike Crossing Speed, this is measured, not an imported city constant. Cities with fewer than 10 measured crossings are not ranked on the map (shown as rings).',
     column_name: 'avg_measured_crossing_speed',
+    sample: { property: 'measured_crossing_sample', minN: 10 },
     rank_column: null,
     higher_is_better: true,
   },
@@ -76,15 +87,17 @@ const METRIC_CONFIGS: Record<string, MetricConfig> = {
     description:
       'Fraction of pose-tracked pedestrians who turned their head left or right before stepping into the road ([P12] head-scanning). A direct behavioural safety indicator no other metric captures.',
     column_name: 'avg_look_before_cross',
+    sample: { property: 'look_before_cross_sample', minN: 30 },
     rank_column: null,
     higher_is_better: true,
   },
   severe_conflicts: {
-    name: 'Severe PET Conflicts',
-    unit: 'count',
+    name: 'Severe Conflicts per 100 Pedestrians',
+    unit: 'per 100 ped',
     description:
-      'Pedestrian-vehicle conflicts with a post-encroachment time under 1.5 s, counted only when the vehicle was actually moving ([I1]). A surrogate-safety measure: near-misses without needing a crash.',
-    column_name: 'total_severe_conflicts',
+      'Pedestrian-vehicle conflicts with a post-encroachment time under 1.5 s, counted only when the vehicle was actually moving ([I1]), expressed per 100 tracked pedestrians. A surrogate-safety measure: near-misses without needing a crash. The raw count is an exposure measure — a longer or busier video scores higher regardless of risk — so both the map and this ranking normalise by the pedestrians actually tracked.',
+    column_name: 'severe_conflicts_per_100_ped',
+    sample: { property: 'pet_exposure_pedestrians', minN: 30 },
     rank_column: null,
     higher_is_better: false,
   },
@@ -93,7 +106,10 @@ const METRIC_CONFIGS: Record<string, MetricConfig> = {
     unit: '%',
     description:
       'Fraction of crossers who stopped mid-road at least once ([P11] micro-events) — the "curb dance" signature of an uncomfortable crossing.',
-    column_name: 'avg_hesitation_rate',
+    // dense_v2 only, matching the map: legacy-tracker videos carry 2-6 pedestrians and
+    // all report ~0.000, which would anchor the bottom of any ranking with an artefact.
+    column_name: 'avg_hesitation_rate_dense',
+    sample: { property: 'hesitation_dense_pedestrians', minN: 30 },
     rank_column: null,
     higher_is_better: false,
   },
@@ -103,15 +119,17 @@ const METRIC_CONFIGS: Record<string, MetricConfig> = {
     description:
       'Median measured speed of tracked vehicles ([V8]). Vehicle speed is the strongest predictor of pedestrian fatality risk.',
     column_name: 'avg_vehicle_speed',
+    sample: { property: 'vehicle_speed_sample', minN: 30 },
     rank_column: null,
     higher_is_better: false,
   },
   social_groups: {
-    name: 'Social Groups',
-    unit: 'count',
+    name: 'Pedestrians Walking in Groups',
+    unit: '%',
     description:
-      'Groups of pedestrians walking together, detected from sustained metric proximity and velocity alignment ([I2]). Group crossing behaviour differs markedly from solo.',
-    column_name: 'total_social_groups',
+      'Share of tracked pedestrians walking in company, from groups detected by sustained metric proximity and velocity alignment ([I2]); dense_v2 videos only. Group crossing behaviour differs markedly from solo. The raw group count measured exposure rather than sociability, so both the map and this ranking use the share.',
+    column_name: 'grouped_pedestrian_share_dense',
+    sample: { property: 'social_dense_pedestrians', minN: 30 },
     rank_column: null,
     higher_is_better: null,
   },
@@ -128,6 +146,7 @@ const METRIC_CONFIGS: Record<string, MetricConfig> = {
     unit: 'years',
     description: 'Average age of pedestrians observed crossing',
     column_name: 'avg_age',
+    sample: { property: 'age_sample', minN: 30 },
     rank_column: null,
     higher_is_better: null,
   },
@@ -190,7 +209,12 @@ export async function GET(
     // Rate metrics are stored as 0-1 ratios but displayed with a '%' unit, so scale them by
     // 100 (city value AND global baseline) — otherwise the UI renders "0.15 %" instead of
     // "15.0 %". deltaVsGlobal is a ratio and is unaffected by scaling both sides equally.
-    const isRateMetric = ['risky_crossing', 'run_red_light', 'crosswalk_usage', 'phone_usage'].includes(metric);
+    //
+    // Driven off the declared unit rather than a hand-maintained metric list: that list had
+    // drifted, so look_before_cross, hesitation_rate and the new social-group share all
+    // declared '%' and rendered unscaled — the same city reading 6.2% on the globe and
+    // "0.06 %" here. Any future '%' metric is now scaled automatically.
+    const isRateMetric = config.unit === '%';
     const scale = isRateMetric ? 100 : 1;
 
     // Map each metric to the matching GLOBAL baseline column. Rate metrics use the global
@@ -237,6 +261,11 @@ export async function GET(
     if (isRateMetric) {
       // Exclude exactly 0.00% (accounting for potential floating point precision)
       whereClause += ` AND ${config.column_name} > 0.0001`;
+    }
+    // Same evidence bar the map applies. config.sample.property is from a fixed in-code
+    // table, never user input, so it is safe to inline.
+    if (config.sample) {
+      whereClause += ` AND ${config.sample.property} >= ${Number(config.sample.minN)}`;
     }
     
     const citiesResult = await pool.query(`

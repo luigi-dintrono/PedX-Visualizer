@@ -442,6 +442,11 @@ ORDER BY af.metric_name, ad.dimension_type;
 -- scripts/migrate-city-insight-metrics.sql are load-bearing: /api/data selects them
 -- (DATA_COLUMNS), so a schema.sql missing them yields a database where every
 -- /api/data request 500s. Regenerate with pg_get_viewdef rather than editing by hand.
+-- Mirrored verbatim from the live database (pg_get_viewdef) so a fresh setup-db builds
+-- the exact shape the app queries. The insight-metric columns appended by
+-- scripts/migrate-city-insight-metrics.sql are load-bearing: /api/data selects them
+-- (DATA_COLUMNS), so a schema.sql missing them yields a database where every
+-- /api/data request 500s. Regenerate with pg_get_viewdef rather than editing by hand.
 CREATE OR REPLACE VIEW v_city_summary AS
 WITH vid AS (
          SELECT videos.city_id,
@@ -462,18 +467,40 @@ WITH vid AS (
             count(DISTINCT videos.import_batch_id) AS import_batch_count,
             avg(videos.measured_walking_speed_mps) AS avg_measured_walking_speed,
             count(videos.measured_walking_speed_mps) AS measured_speed_video_count,
-            avg(videos.measured_crossing_speed_mps) AS avg_measured_crossing_speed,
-            sum(videos.measured_crossing_speed_n) AS measured_crossing_sample,
+            sum(videos.measured_crossing_speed_mps * videos.measured_crossing_speed_n::numeric) / NULLIF(sum(videos.measured_crossing_speed_n) FILTER (WHERE videos.measured_crossing_speed_mps IS NOT NULL), 0)::numeric AS avg_measured_crossing_speed,
+            sum(videos.measured_crossing_speed_n) FILTER (WHERE videos.measured_crossing_speed_mps IS NOT NULL) AS measured_crossing_sample,
             avg(videos.look_before_cross_frac) AS avg_look_before_cross,
             avg(videos.looked_both_ways_frac) AS avg_looked_both_ways,
-            avg(videos.median_cadence_hz) AS avg_cadence_hz,
-            sum(videos.cadence_n) AS cadence_sample,
+            sum(videos.median_cadence_hz * videos.cadence_n::numeric) / NULLIF(sum(videos.cadence_n) FILTER (WHERE videos.median_cadence_hz IS NOT NULL), 0)::numeric AS avg_cadence_hz,
+            sum(videos.cadence_n) FILTER (WHERE videos.median_cadence_hz IS NOT NULL) AS cadence_sample,
             sum(videos.pet_severe_conflicts) AS total_severe_conflicts,
             sum(videos.pet_queued_interactions) AS total_queued_interactions,
             avg(videos.hesitation_rate) AS avg_hesitation_rate,
             avg(videos.vehicle_median_speed_mps) AS avg_vehicle_speed,
             avg(videos.mean_headway_s) AS avg_headway_s,
-            sum(videos.n_social_groups) AS total_social_groups
+            sum(videos.n_social_groups) AS total_social_groups,
+            count(videos.measured_crossing_speed_mps) AS measured_crossing_video_count,
+            sum(videos.total_crossed_pedestrians) FILTER (WHERE videos.look_before_cross_frac IS NOT NULL) AS look_before_cross_sample,
+            count(videos.look_before_cross_frac) AS look_before_cross_video_count,
+            sum(videos.total_vehicles) FILTER (WHERE videos.vehicle_median_speed_mps IS NOT NULL) AS vehicle_speed_sample,
+            count(videos.vehicle_median_speed_mps) AS vehicle_speed_video_count,
+            sum(videos.total_pedestrians) FILTER (WHERE videos.pet_severe_conflicts IS NOT NULL) AS pet_exposure_pedestrians,
+            count(videos.pet_severe_conflicts) AS pet_video_count,
+            100::double precision * sum(videos.pet_severe_conflicts)::double precision / NULLIF(sum(videos.total_pedestrians) FILTER (WHERE videos.pet_severe_conflicts IS NOT NULL), 0)::double precision AS severe_conflicts_per_100_ped,
+            sum(videos.total_pedestrians) FILTER (WHERE videos.n_social_groups IS NOT NULL AND videos.pipeline_version = 'dense_v2'::text) AS social_dense_pedestrians,
+            count(*) FILTER (WHERE videos.n_social_groups IS NOT NULL AND videos.pipeline_version = 'dense_v2'::text) AS social_dense_video_count,
+            sum(videos.grouped_pedestrians) FILTER (WHERE videos.pipeline_version = 'dense_v2'::text) AS grouped_pedestrians_dense,
+            sum(videos.grouped_pedestrians) FILTER (WHERE videos.pipeline_version = 'dense_v2'::text)::double precision / NULLIF(sum(videos.total_pedestrians) FILTER (WHERE videos.n_social_groups IS NOT NULL AND videos.pipeline_version = 'dense_v2'::text), 0)::double precision AS grouped_pedestrian_share_dense,
+            avg(videos.hesitation_rate) FILTER (WHERE videos.pipeline_version = 'dense_v2'::text) AS avg_hesitation_rate_dense,
+            sum(videos.total_pedestrians) FILTER (WHERE videos.hesitation_rate IS NOT NULL AND videos.pipeline_version = 'dense_v2'::text) AS hesitation_dense_pedestrians,
+            count(*) FILTER (WHERE videos.hesitation_rate IS NOT NULL AND videos.pipeline_version = 'dense_v2'::text) AS hesitation_dense_video_count,
+            count(videos.avg_road_width) AS road_width_video_count,
+            sum(videos.total_vehicles) FILTER (WHERE videos.mean_headway_s IS NOT NULL) AS headway_vehicle_sample,
+            count(videos.mean_headway_s) AS headway_video_count,
+            sum(videos.total_crossed_pedestrians) FILTER (WHERE videos.looked_both_ways_frac IS NOT NULL) AS looked_both_ways_sample,
+            sum(videos.total_pedestrians) FILTER (WHERE videos.pet_queued_interactions IS NOT NULL) AS queued_exposure_pedestrians,
+            count(*) FILTER (WHERE videos.pipeline_version = 'dense_v2'::text) AS dense_video_count,
+            count(*) FILTER (WHERE videos.pipeline_version = 'legacy_1hz'::text) AS legacy_video_count
            FROM videos
           GROUP BY videos.city_id
         ), ped AS (
@@ -483,7 +510,9 @@ WITH vid AS (
             count(*) FILTER (WHERE p.risky_crossing)::double precision / NULLIF(count(p.id), 0)::double precision AS risky_crossing_rate,
             count(*) FILTER (WHERE p.run_red_light)::double precision / NULLIF(count(p.id), 0)::double precision AS run_red_light_rate,
             count(*) FILTER (WHERE p.crosswalk_use_or_not)::double precision / NULLIF(count(p.id), 0)::double precision AS crosswalk_usage_rate,
-            count(*) FILTER (WHERE p.phone_using)::double precision / NULLIF(count(p.id), 0)::double precision AS phone_usage_rate
+            count(*) FILTER (WHERE p.phone_using)::double precision / NULLIF(count(p.id), 0)::double precision AS phone_usage_rate,
+            count(p.age) AS age_sample,
+            count(p.walking_speed_mps) AS measured_walking_ped_sample
            FROM pedestrians p
              JOIN videos v ON v.id = p.video_id
           GROUP BY v.city_id
@@ -534,7 +563,31 @@ WITH vid AS (
     vid.avg_hesitation_rate,
     vid.avg_vehicle_speed,
     vid.avg_headway_s,
-    vid.total_social_groups
+    vid.total_social_groups,
+    ped.age_sample,
+    ped.measured_walking_ped_sample,
+    vid.measured_crossing_video_count,
+    vid.look_before_cross_sample,
+    vid.look_before_cross_video_count,
+    vid.vehicle_speed_sample,
+    vid.vehicle_speed_video_count,
+    vid.pet_exposure_pedestrians,
+    vid.pet_video_count,
+    vid.severe_conflicts_per_100_ped,
+    vid.social_dense_pedestrians,
+    vid.social_dense_video_count,
+    vid.grouped_pedestrians_dense,
+    vid.grouped_pedestrian_share_dense,
+    vid.avg_hesitation_rate_dense,
+    vid.hesitation_dense_pedestrians,
+    vid.hesitation_dense_video_count,
+    vid.road_width_video_count,
+    vid.headway_vehicle_sample,
+    vid.headway_video_count,
+    vid.looked_both_ways_sample,
+    vid.queued_exposure_pedestrians,
+    vid.dense_video_count,
+    vid.legacy_video_count
    FROM cities c
      LEFT JOIN vid ON vid.city_id = c.id
      LEFT JOIN ped ON ped.city_id = c.id
@@ -857,6 +910,7 @@ CROSS JOIN
 -- mv_city_insights: Pre-computed insights data per city
 -- video-level and pedestrian-level metrics aggregated in separate CTEs (no fan-out).
 -- Adds crosswalk_usage_rank so /api/metrics/crosswalk_usage can read it here.
+-- Mirrored verbatim from the live database (pg_get_viewdef). See the note on v_city_summary.
 -- Mirrored verbatim from the live database (pg_get_viewdef). See the note on v_city_summary.
 CREATE MATERIALIZED VIEW mv_city_insights AS
 WITH vid AS (
