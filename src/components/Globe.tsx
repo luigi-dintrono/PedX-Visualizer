@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useCallback, useMemo, useState } from 'react';
+import { useEffect, useRef, useCallback, useMemo, useState, useSyncExternalStore } from 'react';
 import { useFilter } from '@/contexts/FilterContext';
 import { CityGlobeData, CityVideo } from '@/types/database';
 import type * as Cesium from 'cesium';
@@ -504,6 +504,77 @@ function createCandidateDotCanvas(): HTMLCanvasElement {
 // Video rows come from FilterContext.cityVideos (shared fetch with InfoSidebar).
 type VideoData = CityVideo;
 
+// Overlay preferences are per-user display choices, not data — remember them across
+// reloads so the globe comes back the way it was left.
+//
+// Modelled as a real external store rather than "useState + read it in an effect": this
+// page is server-rendered, so the stored value cannot be read during the first render, and
+// setState-from-an-effect would cascade a second render on every mount. The in-memory
+// cache is the source of truth so the toggles still work when localStorage throws
+// (private mode, blocked cookies) — there, only the persistence is lost.
+const toggleCache = new Map<string, boolean>();
+const toggleListeners = new Map<string, Set<() => void>>();
+
+function readToggle(key: string, fallback: boolean): boolean {
+  const cached = toggleCache.get(key);
+  if (cached !== undefined) return cached;
+  let value = fallback;
+  try {
+    const stored = window.localStorage.getItem(key);
+    if (stored === 'true' || stored === 'false') value = stored === 'true';
+  } catch {
+    // Storage unavailable — the fallback is fine.
+  }
+  toggleCache.set(key, value);
+  return value;
+}
+
+function usePersistentToggle(key: string, fallback: boolean): [boolean, (next: boolean) => void] {
+  const subscribe = useCallback((onChange: () => void) => {
+    let listeners = toggleListeners.get(key);
+    if (!listeners) {
+      listeners = new Set();
+      toggleListeners.set(key, listeners);
+    }
+    listeners.add(onChange);
+    // Another tab writing the same key fires `storage` here; drop the cache so the next
+    // snapshot re-reads it, and both tabs stay in step.
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== key) return;
+      toggleCache.delete(key);
+      onChange();
+    };
+    window.addEventListener('storage', onStorage);
+    return () => {
+      listeners.delete(onChange);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, [key]);
+
+  const value = useSyncExternalStore(
+    subscribe,
+    () => readToggle(key, fallback),
+    () => fallback, // Server + hydration render: React re-renders with the real value after.
+  );
+
+  const set = useCallback((next: boolean) => {
+    toggleCache.set(key, next);
+    try {
+      window.localStorage.setItem(key, String(next));
+    } catch {
+      // Non-fatal: the toggle still works for this session.
+    }
+    toggleListeners.get(key)?.forEach((listener) => listener());
+  }, [key]);
+
+  return [value, set];
+}
+
+// Which optional localization overlay an entity belongs to. Stamped on the entity as the
+// `overlay` property so one effect can flip visibility for a whole group without knowing
+// how any of them were built.
+type OverlayKind = 'route' | 'candidate' | 'uncertainty';
+
 export default function Globe() {
   const cesiumContainer = useRef<HTMLDivElement>(null);
   const viewerRef = useRef<Cesium.Viewer | null>(null);
@@ -516,13 +587,27 @@ export default function Globe() {
   // exactly two labels (previous off, new on) instead of scanning all ~600 entities and
   // writing label.show on each — that scan ran ~60×/s and invalidated the scene constantly.
   const hoveredEntityRef = useRef<Cesium.Entity | null>(null);
-  // Optional overlay: the camera's estimated route through the city for localized videos.
-  // Toggling flips `show` on the already-built route entities instead of rebuilding the
-  // datasource, so it costs one requestRender rather than a refetch + repaint. The ref
-  // mirrors the state so createVideoMarkers reads the current value at creation time.
-  const [showRoutes, setShowRoutes] = useState(true);
+  // Optional overlays for localized videos: the route the camera walked, the candidate
+  // locations the estimator rejected, and the uncertainty disk + city-centre offset.
+  // Toggling visibility flips `show` on the already-built entities instead of rebuilding
+  // the datasource, so it costs one requestRender rather than a refetch + repaint. Each
+  // ref mirrors its state so createVideoMarkers reads the current value at creation time.
+  const [showRoutes, setShowRoutes] = usePersistentToggle('pedx.overlay.routes', true);
   const showRoutesRef = useRef(showRoutes);
   useEffect(() => { showRoutesRef.current = showRoutes; }, [showRoutes]);
+  const [showCandidates, setShowCandidates] = usePersistentToggle('pedx.overlay.candidates', true);
+  const showCandidatesRef = useRef(showCandidates);
+  useEffect(() => { showCandidatesRef.current = showCandidates; }, [showCandidates]);
+  const [showUncertainty, setShowUncertainty] = usePersistentToggle('pedx.overlay.uncertainty', true);
+  const showUncertaintyRef = useRef(showUncertainty);
+  useEffect(() => { showUncertaintyRef.current = showUncertainty; }, [showUncertainty]);
+  // Whether routes and candidate dots answer a click at all. Off, the click falls through
+  // to whatever is beneath them — normally the city ellipse — which is the point: a route
+  // is drawn over its own city and otherwise swallows every attempt to select that city.
+  // Affects the hover labels too, since "Click to open …" is a lie once this is off.
+  const [overlaysClickable, setOverlaysClickable] = usePersistentToggle('pedx.overlay.clickable', true);
+  const overlaysClickableRef = useRef(overlaysClickable);
+  useEffect(() => { overlaysClickableRef.current = overlaysClickable; }, [overlaysClickable]);
   // Sample-size gate: cities below their metric's minN are drawn as unranked rings. This
   // toggles their VISIBILITY only — never the threshold, which is a claim about measurement
   // precision rather than a preference. The ref is what createHeatmap reads at paint time.
@@ -1223,6 +1308,12 @@ export default function Globe() {
       : new Cesium.Cartesian3(0, 0, -1000);
     const markerDepthTestDistance = is2D ? Number.POSITIVE_INFINITY : 1000000;
 
+    // Read once per paint: whether route lines and candidate dots answer a click. Visibility
+    // is toggled in place on existing entities, but this one is baked in at creation because
+    // it changes the hover text ("Click to open …") and whether the wide invisible hit band
+    // under each route is built at all, so its toggle repaints the datasource.
+    const clickable = overlaysClickableRef.current;
+
     // Create markers for each video
     videosWithCoords.forEach((video) => {
       const lat = video.latitude ?? video.city_latitude;
@@ -1263,8 +1354,11 @@ export default function Globe() {
                   ? (video.localization_spread_m / 1000).toFixed(1) + ' km'
                   : Math.round(video.localization_spread_m) + ' m'}`
               : null,
+            // Deliberately not "(amber dots)": this label is baked in at paint time and
+            // the candidate dots can be switched off without repainting it, so it must
+            // describe the estimate rather than what is currently on screen.
             video.localization_candidates && video.localization_candidates.length > 1
-              ? `${video.localization_candidates.length} candidate locations (amber dots)`
+              ? `${video.localization_candidates.length} candidate locations considered`
               : null,
             video.risky_crossing_ratio != null
               ? `Risky crossing: ${(video.risky_crossing_ratio * 100).toFixed(0)}%`
@@ -1322,23 +1416,27 @@ export default function Globe() {
             lengthM != null ? `${Math.round(lengthM)} m` : null,
             `${routeDegrees.length / 2} points`,
             video.localization_trajectory_source ? `source: ${video.localization_trajectory_source}` : null,
-            'Click to open the video',
+            clickable ? 'Click to open the video' : null,
           ].filter(Boolean).join('\n');
 
           // Wide, near-invisible hit target UNDER the visible line. A 4 px ground-clamped
           // polyline is a hard thing to hit with a mouse; this gives the same click a
           // ~16 px target without thickening the mark. Alpha is low but non-zero —
-          // fully transparent geometry is skipped by the pick pass.
-          videoDataSource.entities.add({
-            polyline: {
-              positions: Cesium.Cartesian3.fromDegreesArray(routeDegrees),
-              width: 16,
-              material: Cesium.Color.fromCssColorString(ROUTE_COLOUR).withAlpha(0.06),
-              clampToGround: true,
+          // fully transparent geometry is skipped by the pick pass. Dropped entirely when
+          // overlays are not clickable: an invisible 16 px band that no longer does
+          // anything would still shadow the city underneath it in the pick stack.
+          if (clickable) {
+            videoDataSource.entities.add({
+              polyline: {
+                positions: Cesium.Cartesian3.fromDegreesArray(routeDegrees),
+                width: 16,
+                material: Cesium.Color.fromCssColorString(ROUTE_COLOUR).withAlpha(0.06),
+                clampToGround: true,
+              },
               show: showRoutesRef.current,
-            },
-            properties: { isRoute: true, videoLink: video.link, routeLabel: routeText },
-          });
+              properties: { isRoute: true, overlay: 'route', videoLink: video.link, routeLabel: routeText },
+            });
+          }
 
           videoDataSource.entities.add({
             polyline: {
@@ -1350,10 +1448,13 @@ export default function Globe() {
                 outlineWidth: 1,
               }),
               clampToGround: true,
-              show: showRoutesRef.current,
             },
+            // Visibility lives on the ENTITY, not the graphic, so one flag covers the line,
+            // its caps and their hover labels together — a graphic-level `show` left stale
+            // labels on screen and desynced from the entity on the next toggle.
+            show: showRoutesRef.current,
             // videoLink makes the line itself open the video, same as its marker.
-            properties: { isRoute: true, videoLink: video.link, routeLabel: routeText },
+            properties: { isRoute: true, overlay: 'route', videoLink: video.link, routeLabel: routeText },
           });
 
           // Start (green) and end (red) caps, so the direction of travel is readable.
@@ -1373,8 +1474,8 @@ export default function Globe() {
                 outlineWidth: 1,
                 heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
                 disableDepthTestDistance: markerDepthTestDistance,
-                show: showRoutesRef.current,
               },
+              show: showRoutesRef.current,
               label: {
                 text: `${which === 'start' ? '▶ Start' : '■ End'} · ${routeText}`,
                 font: '11pt sans-serif',
@@ -1389,7 +1490,7 @@ export default function Globe() {
                 showBackground: true,
                 backgroundPadding: new Cesium.Cartesian2(8, 4),
               },
-              properties: { isRoute: true, videoLink: video.link },
+              properties: { isRoute: true, overlay: 'route', videoLink: video.link },
             });
           });
         }
@@ -1405,6 +1506,8 @@ export default function Globe() {
               material: Cesium.Color.fromCssColorString('#3b82f6').withAlpha(0.10),
               heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
             },
+            show: showUncertaintyRef.current,
+            properties: { overlay: 'uncertainty' },
           });
         }
 
@@ -1422,6 +1525,8 @@ export default function Globe() {
               }),
               clampToGround: true,
             },
+            show: showUncertaintyRef.current,
+            properties: { overlay: 'uncertainty' },
           });
         }
 
@@ -1441,12 +1546,13 @@ export default function Globe() {
                 verticalOrigin: Cesium.VerticalOrigin.CENTER,
                 horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
               },
+              show: showCandidatesRef.current,
               label: {
                 text: [
                   `Candidate #${cand.rank}${video.video_name ? ' · ' + video.video_name : ''}`,
                   streets ? `📍 ${streets}` : null,
                   cand.support != null ? `Support: ${cand.support}` : null,
-                  'Click to open in Google Maps',
+                  clickable ? 'Click to open in Google Maps' : null,
                 ].filter(Boolean).join('\n'),
                 font: '11pt sans-serif',
                 fillColor: Cesium.Color.WHITE,
@@ -1462,6 +1568,7 @@ export default function Globe() {
               },
               properties: {
                 isCandidate: true,
+                overlay: 'candidate',
                 mapsUrl: cand.google_maps_url || `https://www.google.com/maps?q=${cand.latitude},${cand.longitude}`,
               },
             });
@@ -1895,6 +2002,9 @@ export default function Globe() {
   // Paint video markers whenever the shared city-videos data changes.
   // Context sets cityVideos = [] when no city is selected, and
   // createVideoMarkers([]) clears the marker datasource.
+  // `overlaysClickable` is a dependency because, unlike the visibility toggles, it is baked
+  // into the entities (hover text + the routes' invisible hit band) and cannot be flipped
+  // in place. Only the selected city's videos are painted, so the rebuild is cheap.
   useEffect(() => {
     if (!viewerRef.current) return;
 
@@ -1907,35 +2017,47 @@ export default function Globe() {
     return () => {
       cancelled = true;
     };
-  }, [cityVideos, createVideoMarkers]);
+  }, [cityVideos, createVideoMarkers, overlaysClickable]);
 
-  // Route overlay toggle. Flips `show` on the route entities already in the datasource
-  // rather than re-running createVideoMarkers, so toggling costs one repaint and never
-  // refetches. Runs after the paint effect above, so entities exist by the time it fires.
+  // Overlay visibility toggles (routes / candidate dots / uncertainty + offset). Flips
+  // `show` on the entities already in the datasource rather than re-running
+  // createVideoMarkers, so toggling costs one repaint and never refetches. A hidden entity
+  // is also skipped by the pick pass, so switching a layer off takes its clicks with it.
+  //
+  // Safe to run before the async paint effect has finished building a NEW datasource:
+  // entities are created with these same values read from the refs, so the only thing this
+  // pass can touch early is the outgoing datasource, which is about to be discarded.
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      // `Cesium` is a type-only import at module scope; the runtime module comes from
-      // loadCesium(), same as every other effect here.
-      const CesiumRT = await loadCesium();
-      if (cancelled) return;
-      const viewer = viewerRef.current;
-      const ds = videoDataSourceRef.current;
-      if (!viewer || !ds) return;
-      let touched = false;
-      ds.entities.suspendEvents();
-      for (const entity of ds.entities.values) {
-        // properties is a PropertyBag; read the raw value (nothing here is time-varying).
-        if (entity.properties?.isRoute?.getValue?.() !== true) continue;
-        if (entity.polyline) entity.polyline.show = new CesiumRT.ConstantProperty(showRoutes);
-        if (entity.point) entity.point.show = new CesiumRT.ConstantProperty(showRoutes);
-        touched = true;
+    const viewer = viewerRef.current;
+    const ds = videoDataSourceRef.current;
+    if (!viewer || !ds) return;
+
+    const visible: Record<OverlayKind, boolean> = {
+      route: showRoutes,
+      candidate: showCandidates,
+      uncertainty: showUncertainty,
+    };
+
+    let touched = false;
+    ds.entities.suspendEvents();
+    for (const entity of ds.entities.values) {
+      // properties is a PropertyBag; read the raw value (nothing here is time-varying).
+      const kind = entity.properties?.overlay?.getValue?.() as OverlayKind | undefined;
+      if (!kind || !(kind in visible)) continue;
+      const next = visible[kind];
+      if (entity.show === next) continue;
+      entity.show = next;
+      // A hidden entity can never receive the mousemove that would hide its hover label
+      // again, so drop the hover here or the label stays stranded over empty ground.
+      if (!next && hoveredEntityRef.current === entity) {
+        if (entity.label) (entity.label.show as any) = false;
+        hoveredEntityRef.current = null;
       }
-      ds.entities.resumeEvents();
-      if (touched) viewer.scene.requestRender();
-    })();
-    return () => { cancelled = true; };
-  }, [showRoutes, cityVideos]);
+      touched = true;
+    }
+    ds.entities.resumeEvents();
+    if (touched) viewer.scene.requestRender();
+  }, [showRoutes, showCandidates, showUncertainty, cityVideos]);
 
   // Low-confidence visibility toggle. Flips `show` on the ring entities already in the
   // heatmap datasource rather than repainting — one requestRender, no refetch, and no dep
@@ -2016,20 +2138,26 @@ export default function Globe() {
             window.open(`https://www.youtube.com/watch?v=${videoLink}`, '_blank', 'noopener,noreferrer');
             return;
           }
-          // Route polyline or one of its start/end caps → open the same video as its marker.
-          if (prop(p, 'isRoute')) {
-            const routeLink = prop(p, 'videoLink');
-            if (routeLink) {
-              window.open(`https://www.youtube.com/watch?v=${routeLink}`, '_blank', 'noopener,noreferrer');
-              return;
+          // Routes and candidates are click-through when the user has switched their
+          // interactivity off: skipping them here (rather than returning) lets the loop
+          // continue to the city underneath, which is exactly what the toggle is for.
+          // Read from the ref so flipping it never re-registers this handler.
+          if (overlaysClickableRef.current) {
+            // Route polyline or one of its start/end caps → open the same video as its marker.
+            if (prop(p, 'isRoute')) {
+              const routeLink = prop(p, 'videoLink');
+              if (routeLink) {
+                window.open(`https://www.youtube.com/watch?v=${routeLink}`, '_blank', 'noopener,noreferrer');
+                return;
+              }
             }
-          }
-          // Localization candidate marker → open its Google Maps location
-          if (prop(p, 'isCandidate')) {
-            const mapsUrl = prop(p, 'mapsUrl');
-            if (mapsUrl) {
-              window.open(mapsUrl, '_blank', 'noopener,noreferrer');
-              return;
+            // Localization candidate marker → open its Google Maps location
+            if (prop(p, 'isCandidate')) {
+              const mapsUrl = prop(p, 'mapsUrl');
+              if (mapsUrl) {
+                window.open(mapsUrl, '_blank', 'noopener,noreferrer');
+                return;
+              }
             }
           }
         }
@@ -2074,6 +2202,28 @@ export default function Globe() {
     return () => window.removeEventListener('resetGlobe', resetGlobe);
   }, []);
 
+  // How much of each overlay the selected city actually has. Only offer a control for a
+  // layer that is really on the map — most videos are city-centre fallbacks with none, and
+  // a checkbox that does nothing is worse than no checkbox. Mirrors createVideoMarkers'
+  // paint conditions exactly, including the `localization_status === 'ok'` gate the old
+  // route-only condition skipped (which offered the toggle for routes never drawn).
+  const overlayCounts = useMemo(() => {
+    let routes = 0, candidates = 0, uncertainty = 0;
+    for (const v of cityVideos) {
+      if (v.latitude == null || v.longitude == null || v.localization_status !== 'ok') continue;
+      if (Array.isArray(v.localization_route) && v.localization_route.length >= 2) routes++;
+      if (Array.isArray(v.localization_candidates)) {
+        candidates += v.localization_candidates.filter(
+          (c) => c && c.rank !== 1 && Number.isFinite(c.latitude) && Number.isFinite(c.longitude)
+        ).length;
+      }
+      if ((v.localization_spread_m ?? 0) > 0 || (v.city_latitude != null && v.city_longitude != null)) uncertainty++;
+    }
+    return { routes, candidates, uncertainty };
+  }, [cityVideos]);
+  const hasOverlays = overlayCounts.routes > 0 || overlayCounts.candidates > 0 || overlayCounts.uncertainty > 0;
+  const hasClickTargets = overlayCounts.routes > 0 || overlayCounts.candidates > 0;
+
   return (
     <div className="relative w-full h-full">
       <div
@@ -2083,26 +2233,92 @@ export default function Globe() {
       />
       
       
-      {/* Route overlay toggle. Only offered when the selected city actually has a video
-          with an estimated route — most videos are city-centre fallbacks with none, and a
-          control that does nothing is worse than no control. */}
-      {cityVideos.some(v => Array.isArray(v.localization_route) && v.localization_route.length >= 2) && (
-        <div className="absolute bottom-4 left-4 bg-black/90 backdrop-blur-sm text-white px-3 py-2 rounded-lg text-sm shadow-lg">
-          <label className="flex items-center gap-2 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={showRoutes}
-              onChange={(e) => setShowRoutes(e.target.checked)}
-              className="accent-orange-500 cursor-pointer"
-            />
-            <span className="inline-block w-4 h-1 rounded bg-purple-500" aria-hidden="true" />
-            <span className="text-xs">Show video journeys</span>
-          </label>
-          <div className="text-[11px] text-gray-400 mt-1 pl-6 space-y-0.5">
-            <div>Route walked · <span className="text-green-400">start</span> → <span className="text-red-400">end</span> · click to open video</div>
-            <div><span className="text-amber-400">●</span> amber = other candidate locations · blue dashes = offset from city centre</div>
+      {/* Localization overlay controls. Each row is offered only when the selected city
+          actually has that layer on the map — a control that does nothing is worse than no
+          control. Choices persist across reloads (see usePersistentToggle). */}
+      {hasOverlays && (
+        <fieldset className="absolute bottom-4 left-4 bg-black/90 backdrop-blur-sm text-white px-3 py-2.5 rounded-lg shadow-lg max-w-[17rem]">
+          <legend className="text-xs font-semibold mb-2 text-gray-200">Localization overlays</legend>
+
+          <div className="space-y-2">
+            {overlayCounts.routes > 0 && (
+              <div>
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={showRoutes}
+                    onChange={(e) => setShowRoutes(e.target.checked)}
+                    className="accent-orange-500 cursor-pointer"
+                  />
+                  <span className="inline-block w-4 h-1 rounded bg-purple-500 shrink-0" aria-hidden="true" />
+                  <span className="text-xs">
+                    Routes walked <span className="text-gray-500">({overlayCounts.routes})</span>
+                  </span>
+                </label>
+                <div className="text-[11px] text-gray-400 mt-0.5 pl-6">
+                  <span className="text-green-400">start</span> → <span className="text-red-400">end</span> of the estimated path
+                </div>
+              </div>
+            )}
+
+            {overlayCounts.candidates > 0 && (
+              <div>
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={showCandidates}
+                    onChange={(e) => setShowCandidates(e.target.checked)}
+                    className="accent-orange-500 cursor-pointer"
+                  />
+                  <span className="inline-block w-3 h-3 rounded-full bg-amber-500 border border-white shrink-0" aria-hidden="true" />
+                  <span className="text-xs">
+                    Other candidates <span className="text-gray-500">({overlayCounts.candidates})</span>
+                  </span>
+                </label>
+                <div className="text-[11px] text-gray-400 mt-0.5 pl-6">
+                  Locations the estimator ranked below the chosen one
+                </div>
+              </div>
+            )}
+
+            {overlayCounts.uncertainty > 0 && (
+              <div>
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={showUncertainty}
+                    onChange={(e) => setShowUncertainty(e.target.checked)}
+                    className="accent-orange-500 cursor-pointer"
+                  />
+                  <span className="inline-block w-3 h-3 rounded-full bg-blue-500/30 border border-blue-400 shrink-0" aria-hidden="true" />
+                  <span className="text-xs">Uncertainty &amp; offset</span>
+                </label>
+                <div className="text-[11px] text-gray-400 mt-0.5 pl-6">
+                  ± spread disk, and blue dashes back to the city centre
+                </div>
+              </div>
+            )}
           </div>
-        </div>
+
+          {hasClickTargets && (
+            <div className="mt-2 pt-2 border-t border-gray-700">
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={overlaysClickable}
+                  onChange={(e) => setOverlaysClickable(e.target.checked)}
+                  className="accent-orange-500 cursor-pointer"
+                />
+                <span className="text-xs">Clickable</span>
+              </label>
+              <div className="text-[11px] text-gray-400 mt-0.5 pl-6">
+                {overlaysClickable
+                  ? 'Routes open the video, candidates open Google Maps'
+                  : 'Clicks pass through to the city underneath'}
+              </div>
+            </div>
+          )}
+        </fieldset>
       )}
 
       {/* Heatmap Legend - moved to bottom right */}
