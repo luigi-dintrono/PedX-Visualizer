@@ -39,3 +39,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Person-level rows (inferred gender/age/phone/clothing, keyed to public YouTube ids).
+# Produced by PedX-Insight and read from disk by scripts/aggregate-csv-data.js; never commit it.
+summary_data/all_pedestrian_info.csv
