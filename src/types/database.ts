@@ -207,6 +207,38 @@ export interface CityGlobeData {
   avg_crossing_time?: number | string | null;
   avg_road_width?: number | string | null;
   traffic_mortality?: number | string | null;
+  // Model-based uncertainty for the four per-pedestrian rates (v_city_rate_estimates,
+  // scripts/estimate_city_rates.py): <m>_est/_lo/_hi = posterior mean + 95% interval of the
+  // city's expected rate for a new video, <m>_videos = videos behind it, <m>_rank_lo/_hi =
+  // 95% rank interval (1 = highest) among <m>_ranked gated cities. Absent when not modelled.
+  risky_crossing_videos?: number | null;
+  risky_crossing_est?: number | null;
+  risky_crossing_lo?: number | null;
+  risky_crossing_hi?: number | null;
+  risky_crossing_rank_lo?: number | null;
+  risky_crossing_rank_hi?: number | null;
+  risky_crossing_ranked?: number | null;
+  run_red_light_videos?: number | null;
+  run_red_light_est?: number | null;
+  run_red_light_lo?: number | null;
+  run_red_light_hi?: number | null;
+  run_red_light_rank_lo?: number | null;
+  run_red_light_rank_hi?: number | null;
+  run_red_light_ranked?: number | null;
+  crosswalk_usage_videos?: number | null;
+  crosswalk_usage_est?: number | null;
+  crosswalk_usage_lo?: number | null;
+  crosswalk_usage_hi?: number | null;
+  crosswalk_usage_rank_lo?: number | null;
+  crosswalk_usage_rank_hi?: number | null;
+  crosswalk_usage_ranked?: number | null;
+  phone_usage_videos?: number | null;
+  phone_usage_est?: number | null;
+  phone_usage_lo?: number | null;
+  phone_usage_hi?: number | null;
+  phone_usage_rank_lo?: number | null;
+  phone_usage_rank_hi?: number | null;
+  phone_usage_ranked?: number | null;
   // /api/cities only:
   videos_analyzed?: number | string | null;
   measured_speed_video_count?: number | string | null;

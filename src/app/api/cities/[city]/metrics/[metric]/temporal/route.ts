@@ -136,7 +136,9 @@ export async function GET(
         WITH monthly_data AS (
           SELECT 
             date_trunc('month', COALESCE(v.data_collected_date, v.first_imported_at::DATE, v.created_at::DATE))::DATE as month_date,
-            COUNT(CASE WHEN p.${pedestrianField} THEN 1 END)::FLOAT / NULLIF(COUNT(p.id), 0) as metric_value
+            -- Denominator is the pedestrians whose flag is KNOWN: COUNT(p.id) counted an
+            -- undetermined risky crossing (NULL) as a safe one.
+            COUNT(CASE WHEN p.${pedestrianField} THEN 1 END)::FLOAT / NULLIF(COUNT(p.${pedestrianField}), 0) as metric_value
           FROM videos v
           LEFT JOIN pedestrians p ON v.id = p.video_id
           WHERE v.city_id = $1

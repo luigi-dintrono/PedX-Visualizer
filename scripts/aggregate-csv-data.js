@@ -14,6 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const csv = require('csv-parser');
+const { Readable } = require('stream');
 const { Pool } = require('pg');
 
 // Load environment variables from .env.local (for Next.js projects) or .env
@@ -56,12 +57,31 @@ function safeNumeric(value) {
     return isNaN(parsed) ? null : parsed;
 }
 
-// Helper function to safely parse boolean values
+// Helper function to safely parse boolean values.
+//
+// Accepts numeric encodings, not just the literal '1'. pandas widens an integer column
+// to float64 the moment a single NA appears, so `to_csv` then writes '1.0'/'0.0' instead
+// of '1'/'0'. That is exactly what happened on 2026-09-07: making per-pedestrian
+// risky_crossing nullable flipped the token from '1' to '1.0', the old strict comparison
+// returned false for every one of them, and 156 risky pedestrians were published to the
+// database as NOT risky. The producer has since been pinned to Int64, but this stays
+// tolerant because the same widening can hit any of the 40+ boolean columns here.
+//
+// 'none'/'nan' are treated as unknown (null), NOT false -- an undetermined observation is
+// not a negative one.
 function safeBoolean(value) {
     if (value === null || value === undefined || value === '') {
         return null;
     }
-    return value === '1' || value === 'true' || value === 'yes';
+    const s = String(value).trim().toLowerCase();
+    if (s === '' || s === 'none' || s === 'nan' || s === 'na' || s === '<na>' || s === 'null') {
+        return null;
+    }
+    const n = Number(s);
+    if (Number.isFinite(n)) {
+        return n !== 0;
+    }
+    return s === 'true' || s === 'yes' || s === 't' || s === 'y';
 }
 
 // Helper function to safely parse integer values
@@ -117,61 +137,46 @@ function cleanString(value) {
     return value.toString().trim() || null;
 }
 
-// Read CSV file and return parsed data with encoding detection
+// Strict UTF-8 decoder (WHATWG Encoding, built into Node). fatal:true makes invalid bytes
+// throw instead of silently becoming U+FFFD; the BOM, if any, is stripped.
+const UTF8_STRICT = new TextDecoder('utf-8', { fatal: true });
+
+// Read a CSV file and return its rows.
+//
+// The file must be UTF-8. The old reader opened the stream as 'utf8' -- which never errors,
+// it just substitutes U+FFFD -- so its Latin-1 "fallback" never ran, and a GBK-encoded
+// export reached the database as 'Asunci¨®n'-style mojibake that seven fix-encoding scripts
+// then patched by hand from a list of known names. Guessing an encoding is what caused that
+// damage, so a non-UTF-8 file is now rejected with the line to look at.
 async function readCSV(filePath) {
+    const bytes = fs.readFileSync(filePath);
+    let text;
+    try {
+        text = UTF8_STRICT.decode(bytes);
+    } catch {
+        const lossy = bytes.toString('utf8');
+        const at = lossy.indexOf('\uFFFD');
+        const line = at >= 0 ? lossy.slice(0, at).split('\n').length : '?';
+        throw new Error(
+            `${filePath} is not valid UTF-8 (first bad byte on line ${line}). ` +
+            'Re-export it as UTF-8; it is not imported, so nothing is half-written.'
+        );
+    }
     return new Promise((resolve, reject) => {
         const results = [];
-        
-        // Try UTF-8 first, then fallback to Latin-1 if needed
-        function tryRead(encoding) {
-            const stream = fs.createReadStream(filePath, { encoding: encoding });
-            const csvStream = stream.pipe(csv({
-                skipEmptyLines: true,
-                skipLinesWithError: false,
-            }));
-            
-            csvStream
-                .on('data', (data) => {
-                    // Ensure all string values are properly decoded
-                    const decodedData = {};
-                    for (const [key, value] of Object.entries(data)) {
-                        if (typeof value === 'string') {
-                            // Normalize the string to ensure proper UTF-8 encoding
-                            decodedData[key] = value.normalize('NFC');
-                        } else {
-                            decodedData[key] = value;
-                        }
-                    }
-                    results.push(decodedData);
-                })
-                .on('end', () => {
-                    if (VERBOSE && encoding !== 'utf8') {
-                        log(`Read ${filePath} with encoding: ${encoding}`);
-                    }
-                    resolve(results);
-                })
-                .on('error', (error) => {
-                    if (encoding === 'utf8') {
-                        // Try Latin-1 as fallback
-                        results.length = 0;
-                        tryRead('latin1');
-                    } else {
-                        reject(error);
-                    }
-                });
-                
-            stream.on('error', (error) => {
-                if (encoding === 'utf8') {
-                    // Try Latin-1 as fallback
-                    results.length = 0;
-                    tryRead('latin1');
-                } else {
-                    reject(error);
+        Readable.from([text])
+            .pipe(csv({ skipEmptyLines: true, skipLinesWithError: false }))
+            .on('data', (data) => {
+                // NFC so visually identical names (precomposed vs combining accents)
+                // compare equal in the city lookup.
+                const row = {};
+                for (const [key, value] of Object.entries(data)) {
+                    row[key] = typeof value === 'string' ? value.normalize('NFC') : value;
                 }
-            });
-        }
-        
-        tryRead('utf8');
+                results.push(row);
+            })
+            .on('end', () => resolve(results))
+            .on('error', reject);
     });
 }
 
@@ -434,6 +439,11 @@ class DatabaseAggregator {
                     // legacy concatenation last as a final fallback.
                     city_link: cleanString(row.city_link || row.video_name || `${row.city}_${row.link}`),
                     duration_seconds: safeNumeric(row.duration_seconds),
+                    // How the denominator was obtained: video | video_meta | analysis_time.
+                    duration_source: cleanString(row.duration_source),
+                    // PedX-Insight analysis stamp (git sha + weights + config digests).
+                    // Absent/blank = unstamped run; never compare across values.
+                    code_version: cleanString(row.code_version),
                     total_frames: safeInteger(row.total_frames),
                     // link-keyed map for new CSVs; duration-keyed fallback for legacy ones
                     analysis_seconds: safeNumeric(timeMap.get(cleanString(row.link)) ?? timeMap.get(row.duration_seconds)),
@@ -442,6 +452,10 @@ class DatabaseAggregator {
                     average_age: safeNumeric(row.average_age),
                     phone_usage_ratio: safeNumeric(row.phone_usage_ratio),
                     risky_crossing_ratio: safeNumeric(row.risky_crossing_ratio),
+                    // Evidence-positive since 2026-09-07 — never read the ratio without
+                    // the coverage. See scripts/migrate-add-metric-coverage.sql.
+                    risky_crossing_coverage: safeNumeric(row.risky_crossing_coverage),
+                    unsignalled_crossing_ratio: safeNumeric(row.unsignalled_crossing_ratio),
                     run_red_light_ratio: safeNumeric(row.run_red_light_ratio),
                     crosswalk_usage_ratio: safeNumeric(row.crosswalk_usage_ratio),
                     traffic_signs_ratio: safeNumeric(row.traffic_signs_ratio),
@@ -512,26 +526,50 @@ class DatabaseAggregator {
                         arrow_board_prob, cones_prob, accident_prob, crossing_time, crossing_speed,
                         measured_walking_speed_mps,
                         measured_crossing_speed_mps, measured_crossing_speed_n, pipeline_version, pet_severe_conflicts, pet_moderate_conflicts, pet_queued_interactions, pet_min_s, vehicle_median_speed_mps, vehicle_p85_speed_mps, mean_headway_s, platoon_frac, vehicle_flow_per_min, anticipatory_start_frac, mean_red_exposure_s, hesitation_rate, aborted_start_rate, evasive_event_count, n_social_groups, grouped_pedestrians, look_before_cross_frac, looked_both_ways_frac, median_cadence_hz, cadence_n,
-                        data_collected_date, import_batch_id, first_imported_at, last_updated_at
+                        data_collected_date, import_batch_id, first_imported_at, last_updated_at,
+                        risky_crossing_coverage, unsignalled_crossing_ratio, duration_source,
+                        code_version
                     ) VALUES (
                         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
                         $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30,
                         $31, $32, $33, $34, $35,
-                        $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58
+                        $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56, $57, $58,
+                        $59, $60, $61,
+                        $62
                     )
-                    ON CONFLICT (link) 
+                    ON CONFLICT (link)
                     DO UPDATE SET
                         city_id = EXCLUDED.city_id,
                         video_name = EXCLUDED.video_name,
                         city_link = EXCLUDED.city_link,
-                        duration_seconds = EXCLUDED.duration_seconds,
+                        -- Duration ONLY is coalesced. [A1] rows written after the source
+                        -- video was deleted carry a blank duration, and re-importing one
+                        -- used to erase a good stored value every night. Duration is
+                        -- version-independent physics, so a stored value is never stale.
+                        -- Do NOT extend this to the metric columns: that would make it
+                        -- impossible for a re-import to retract a value, leaving a stale
+                        -- legacy_1hz number sitting in a dense_v2 row with nothing marking it.
+                        -- The pair must move together: two independent COALESCEs could keep
+                        -- a stored duration while adopting the incoming row's source label
+                        -- (or vice versa), leaving the provenance describing a value it did
+                        -- not produce.
+                        duration_seconds = COALESCE(EXCLUDED.duration_seconds, videos.duration_seconds),
+                        duration_source = CASE
+                            WHEN EXCLUDED.duration_seconds IS NOT NULL THEN EXCLUDED.duration_source
+                            ELSE videos.duration_source
+                        END,
                         total_frames = EXCLUDED.total_frames,
+                        -- Not coalesced: a re-import from an unstamped run must clear the
+                        -- stamp, or the row would claim code it was not produced by.
+                        code_version = EXCLUDED.code_version,
                         analysis_seconds = EXCLUDED.analysis_seconds,
                         total_pedestrians = EXCLUDED.total_pedestrians,
                         total_crossed_pedestrians = EXCLUDED.total_crossed_pedestrians,
                         average_age = EXCLUDED.average_age,
                         phone_usage_ratio = EXCLUDED.phone_usage_ratio,
                         risky_crossing_ratio = EXCLUDED.risky_crossing_ratio,
+                        risky_crossing_coverage = EXCLUDED.risky_crossing_coverage,
+                        unsignalled_crossing_ratio = EXCLUDED.unsignalled_crossing_ratio,
                         run_red_light_ratio = EXCLUDED.run_red_light_ratio,
                         crosswalk_usage_ratio = EXCLUDED.crosswalk_usage_ratio,
                         traffic_signs_ratio = EXCLUDED.traffic_signs_ratio,
@@ -639,7 +677,14 @@ class DatabaseAggregator {
                     videoDataValues.data_collected_date,
                     videoDataValues.import_batch_id,
                     firstImportedAt,
-                    importDate
+                    importDate,
+                    // $59-$61, appended at the end of both the column list and this
+                    // array so the existing $1..$58 numbering is untouched (2026-09-07).
+                    videoDataValues.risky_crossing_coverage,
+                    videoDataValues.unsignalled_crossing_ratio,
+                    videoDataValues.duration_source,
+                    // $62 (2026-10-10)
+                    videoDataValues.code_version
                 ]);
                 
                 // Track update history if video was updated (not first import)

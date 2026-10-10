@@ -25,6 +25,11 @@ const VERBOSE = process.argv.includes('--verbose');
 const DRY_RUN = process.argv.includes('--dry-run');
 const MIN_INSIGHTS_PER_CITY = 3;
 const MAX_INSIGHTS_PER_CITY = 10;
+// Minimum sample before a per-pedestrian rate gets a sentence. Matches the globe's
+// METRIC_CONFIG minN (Globe.tsx) so the text never states a rate the map draws as a
+// low-confidence ring. It was 10, so cities the map refused to rank still got
+// confident "x% lower than the global average" claims.
+const MIN_RATE_N = 30;
 
 // Database connection
 const pool = new Pool({
@@ -110,12 +115,20 @@ const INSIGHT_TEMPLATES = [
         category: 'behavior',
         name: 'Risky Crossing Assessment',
         evaluate: (cityData, globalData) => {
-            if (!cityData.avg_risky_crossing_ratio || !globalData.global_risky_crossing_rate || cityData.pedestrian_count < 10) {
+            // Same evidence bar as the globe and the leaderboard (risky_crossing_determined
+            // >= 30, see Globe.tsx METRIC_CONFIG.risky_crossing.sample): the rate's
+            // denominator is crossings whose signal state was observed, not pedestrians.
+            // `== null`, not falsiness, so a measured 0% still gets its sentence.
+            if (cityData.avg_risky_crossing_ratio == null || globalData.global_avg_risky_crossing_ratio == null
+                || Number(cityData.risky_crossing_determined) < 30) {
                 return null;
             }
-            
+
+            // Compare like with like: the city value is a per-video mean ratio, so the
+            // baseline is the per-video global mean, not the pooled pedestrian rate.
             const cityRisk = parseFloat(cityData.avg_risky_crossing_ratio) * 100;
-            const globalRisk = parseFloat(globalData.global_risky_crossing_rate) * 100;
+            const globalRisk = parseFloat(globalData.global_avg_risky_crossing_ratio) * 100;
+            if (!(globalRisk > 0)) return null;
             const delta = ((cityRisk - globalRisk) / globalRisk) * 100;
             
             if (Math.abs(delta) < 10) return null; // Lowered from 15%
@@ -193,7 +206,7 @@ const INSIGHT_TEMPLATES = [
         category: 'demographic',
         name: 'Age Demographics',
         evaluate: (cityData, globalData) => {
-            if (!cityData.avg_age || !globalData.global_median_pedestrian_age || cityData.pedestrian_count < 10) {
+            if (!cityData.avg_age || !globalData.global_median_pedestrian_age || Number(cityData.age_sample) < MIN_RATE_N) {
                 return null;
             }
             
@@ -223,7 +236,7 @@ const INSIGHT_TEMPLATES = [
         category: 'behavior',
         name: 'Phone Usage Pattern',
         evaluate: (cityData, globalData) => {
-            if (!cityData.phone_usage_ratio || cityData.pedestrian_count < 10) {
+            if (!cityData.phone_usage_ratio || cityData.pedestrian_count < MIN_RATE_N) {
                 return null;
             }
             
@@ -248,7 +261,7 @@ const INSIGHT_TEMPLATES = [
         category: 'behavior',
         name: 'Crosswalk Usage Pattern',
         evaluate: (cityData, globalData) => {
-            if (!cityData.avg_crosswalk_usage_ratio || !globalData.global_crosswalk_usage_rate || cityData.pedestrian_count < 10) {
+            if (!cityData.avg_crosswalk_usage_ratio || !globalData.global_crosswalk_usage_rate || cityData.pedestrian_count < MIN_RATE_N) {
                 return null;
             }
             
@@ -306,7 +319,7 @@ const INSIGHT_TEMPLATES = [
         category: 'demographic',
         name: 'Gender Distribution',
         evaluate: (cityData, globalData) => {
-            if (!cityData.male_ratio || cityData.pedestrian_count < 15) {
+            if (!cityData.male_ratio || cityData.pedestrian_count < MIN_RATE_N) {
                 return null;
             }
             
@@ -335,7 +348,7 @@ const INSIGHT_TEMPLATES = [
         category: 'behavior',
         name: 'Red Light Violations',
         evaluate: (cityData, globalData) => {
-            if (!cityData.avg_run_red_light_ratio || cityData.pedestrian_count < 10) {
+            if (!cityData.avg_run_red_light_ratio || cityData.pedestrian_count < MIN_RATE_N) {
                 return null;
             }
             
@@ -514,7 +527,7 @@ const INSIGHT_TEMPLATES = [
         category: 'demographic',
         name: 'Observed vs Resident Age',
         evaluate: (cityData) => {
-            if (!cityData.avg_age || !cityData.city_med_age || cityData.pedestrian_count < 10) return null;
+            if (!cityData.avg_age || !cityData.city_med_age || Number(cityData.age_sample) < MIN_RATE_N) return null;
             const obs = parseFloat(cityData.avg_age);
             const res = parseFloat(cityData.city_med_age);
             if (!(res > 0)) return null;

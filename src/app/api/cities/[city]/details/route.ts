@@ -40,8 +40,9 @@ interface GenderRow {
 interface AgeGroupRow {
   age_group?: string;
   count?: number;
-  risky_rate?: number;
-  red_light_rate?: number;
+  risky_rate?: number | null;
+  risky_n?: number;
+  red_light_rate?: number | null;
 }
 
 interface VehicleRow {
@@ -209,8 +210,11 @@ export async function GET(
             ELSE 'Unknown'
           END as age_group,
           COUNT(*) as count,
-          AVG(CASE WHEN risky_crossing THEN 1 ELSE 0 END) * 100 as risky_rate,
-          AVG(CASE WHEN run_red_light THEN 1 ELSE 0 END) * 100 as red_light_rate
+          -- AVG over the flag itself skips NULLs. The old CASE ... ELSE 0 counted every
+          -- undetermined crossing (signal state never observed) as a safe one.
+          AVG(risky_crossing::int) * 100 as risky_rate,
+          COUNT(risky_crossing) as risky_n,
+          AVG(run_red_light::int) * 100 as red_light_rate
         FROM pedestrians p
         JOIN videos v ON p.video_id = v.id
         WHERE v.city_id = $1 AND p.age IS NOT NULL
@@ -603,8 +607,10 @@ export async function GET(
         })),
         age: (ageResult.rows || []).map(row => ({
           group: row.age_group || 'Unknown',
-          risky_rate: row.risky_rate ? parseFloat(Number(row.risky_rate).toFixed(1)) : 0,
-          red_light_rate: row.red_light_rate ? parseFloat(Number(row.red_light_rate).toFixed(1)) : 0
+          // null, not 0: an age group with no determined crossings has no risky rate.
+          risky_rate: row.risky_rate != null ? parseFloat(Number(row.risky_rate).toFixed(1)) : null,
+          risky_n: row.risky_n != null ? Number(row.risky_n) : 0,
+          red_light_rate: row.red_light_rate != null ? parseFloat(Number(row.red_light_rate).toFixed(1)) : null
         }))
       },
       vehicles: (vehiclesResult.rows || []).map(row => ({

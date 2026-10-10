@@ -95,6 +95,17 @@ interface MetricData {
     pedestrianCount: number;
     deltaVsGlobal: number | null;
     rankValue: number | null;
+    // Model-based interval (scripts/estimate_city_rates.py) for the four per-pedestrian
+    // rates; null for other metrics. Same unit/scale as `value`.
+    estimate: {
+      mean: number;
+      low: number;
+      high: number;
+      videos: number | null;
+      rankLow: number | null;
+      rankHigh: number | null;
+      rankedCities: number | null;
+    } | null;
   }>;
 }
 
@@ -164,7 +175,7 @@ export function InfoSidebar() {
     };
     demographics: {
       gender: Array<{ type: string; percentage: number }>;
-      age: Array<{ group: string; risky_rate: number; red_light_rate: number }>;
+      age: Array<{ group: string; risky_rate: number | null; risky_n: number; red_light_rate: number | null }>;
     };
     vehicles: Array<{ type: string; percentage: number }>;
     risk_factors: Array<{ factor: string; risk_increase: number; sample_size: number }>;
@@ -758,6 +769,17 @@ export function InfoSidebar() {
                             )}
                             <span>{city.videoCount} videos</span>
                           </div>
+                          {city.estimate && (
+                            // One video is one place, one time, one camera, so a single-video
+                            // city's interval is wide on purpose; the rank interval says how
+                            // far the position above can be trusted.
+                            <div className="text-xs text-muted-foreground mt-0.5">
+                              Model {city.estimate.mean.toFixed(0)}{metricData.metric.unit} (95% interval {city.estimate.low.toFixed(0)}–{city.estimate.high.toFixed(0)})
+                              {city.estimate.rankLow != null && city.estimate.rankHigh != null && city.estimate.rankedCities != null
+                                ? ` · rank ${city.estimate.rankLow === city.estimate.rankHigh ? city.estimate.rankLow : `${city.estimate.rankLow}–${city.estimate.rankHigh}`} of ${city.estimate.rankedCities}`
+                                : ''}
+                            </div>
+                          )}
                         </div>
                       </div>
                       <ChevronRight className="w-4 h-4 text-muted-foreground" />
@@ -813,8 +835,11 @@ export function InfoSidebar() {
                   <li className="flex items-start gap-2">
                     <span className="text-primary mt-1">•</span>
                     <span>
-                      <strong>{metricData.cities[0]?.city}</strong> leads with {metricData.cities[0]?.value.toFixed(2)} {metricData.metric.unit}, 
-                      {metricData.cities[0]?.deltaVsGlobal && metricData.cities[0].deltaVsGlobal > 0 ? ' significantly above' : ' below'} the global average.
+                      <strong>{metricData.cities[0]?.city}</strong> is first on the list at {metricData.cities[0]?.value.toFixed(2)} {metricData.metric.unit}, 
+                      {metricData.cities[0]?.deltaVsGlobal && metricData.cities[0].deltaVsGlobal > 0 ? ' above' : ' below'} the global average
+                      {metricData.cities[0]?.estimate
+                        ? ` (95% interval ${metricData.cities[0].estimate.low.toFixed(0)}–${metricData.cities[0].estimate.high.toFixed(0)}${metricData.metric.unit}, from ${metricData.cities[0].estimate.videos ?? '?'} video${metricData.cities[0].estimate.videos === 1 ? '' : 's'}).`
+                        : '.'}
                     </span>
                   </li>
                   {metricRelationships.length > 0 && (
@@ -1441,11 +1466,15 @@ export function InfoSidebar() {
                     </div>
                     {cityDetails.demographics.age.length > 0 && (
                       <div className="text-sm">
-                        <span className="font-medium">Risk by age:</span> {cityDetails.demographics.age.map((a, idx) => {
-                          const riskyDelta = a.risky_rate > 0 ? `+${a.risky_rate.toFixed(0)}%` : `${a.risky_rate.toFixed(0)}%`
+                        <span className="font-medium">Risky crossing by age:</span> {cityDetails.demographics.age.map((a, idx) => {
+                          // A rate with no determined crossings behind it is "n/a", not 0%;
+                          // n is shown so a 1-of-2 group can't read like a 50% finding.
+                          const risky = a.risky_rate == null || !a.risky_n
+                            ? 'n/a'
+                            : `${a.risky_rate.toFixed(0)}%, n=${a.risky_n}`
                           return (
                             <span key={idx}>
-                              {a.group} ({riskyDelta})
+                              {a.group} ({risky})
                               {idx < cityDetails.demographics.age.length - 1 ? ', ' : ''}
                             </span>
                           )

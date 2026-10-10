@@ -22,7 +22,10 @@ const METRIC_CONFIGS: Record<string, MetricConfig> = {
     unit: '%',
     description: 'Percentage of pedestrians crossing in unsafe conditions without proper precautions',
     column_name: 'avg_risky_crossing_ratio',
-    sample: { property: 'pedestrian_count', minN: 30 },
+    // Mirrors Globe.tsx METRIC_CONFIG.risky_crossing.sample — keep the two in step.
+    // Gates on determined crossings (observed signal state), not pedestrian_count: since
+    // 2026-09-07 the latter is no longer this rate's denominator.
+    sample: { property: 'risky_crossing_determined', minN: 30 },
     rank_column: 'risky_rank',
     higher_is_better: false,
   },
@@ -256,10 +259,15 @@ export async function GET(
     const rankColumn = config.rank_column ? `, ${config.rank_column}` : '';
     const orderDirection = config.higher_is_better ? 'DESC' : 'ASC';
 
-    // Build WHERE clause to exclude 0.00% values for rate metrics
+    // IS NOT NULL is the real filter. The `> 0.0001` guard existed because a 0.00% used to
+    // mean "no evidence" — a city where the detector never fired scored zero. Since
+    // 2026-09-07 that case is NULL and excluded here, while a genuine measured zero
+    // (Toronto: 47 determined crossings, none against the signal) is a real result that
+    // belongs in the ranking. Dropping it would hide exactly the safest cities.
     let whereClause = `${config.column_name} IS NOT NULL`;
-    if (isRateMetric) {
-      // Exclude exactly 0.00% (accounting for potential floating point precision)
+    if (isRateMetric && metric !== 'risky_crossing') {
+      // The other rate metrics still encode "no evidence" as 0, so they keep the guard
+      // until they get the same evidence-positive treatment.
       whereClause += ` AND ${config.column_name} > 0.0001`;
     }
     // Same evidence bar the map applies. config.sample.property is from a fixed in-code
@@ -268,6 +276,21 @@ export async function GET(
       whereClause += ` AND ${config.sample.property} >= ${Number(config.sample.minN)}`;
     }
     
+    // Model interval for the four per-pedestrian rates (v_city_rate_estimates, written by
+    // scripts/estimate_city_rates.py). `metric` was validated against METRIC_CONFIGS above,
+    // so interpolating it is safe; the join is skipped for metrics the model does not cover.
+    const modelled = ['risky_crossing', 'run_red_light', 'crosswalk_usage', 'phone_usage'].includes(metric);
+    const estimateSelect = modelled
+      ? `, e.${metric}_est AS est_mean, e.${metric}_lo AS est_low, e.${metric}_hi AS est_high,
+           e.${metric}_videos AS est_videos, e.${metric}_rank_lo AS est_rank_lo,
+           e.${metric}_rank_hi AS est_rank_hi, e.${metric}_ranked AS est_ranked`
+      : '';
+    // No column of v_city_rate_estimates shares a name with the mv_city_insights columns used
+    // below, so the existing unqualified column references stay unambiguous.
+    const estimateJoin = modelled
+      ? 'LEFT JOIN v_city_rate_estimates e ON e.city_id = mv_city_insights.city_id'
+      : '';
+
     const citiesResult = await pool.query(`
       SELECT 
         city,
@@ -277,7 +300,9 @@ export async function GET(
         video_count,
         pedestrian_count
         ${rankColumn}
+        ${estimateSelect}
       FROM mv_city_insights
+      ${estimateJoin}
       WHERE ${whereClause}
       ORDER BY ${config.column_name} ${orderDirection} NULLS LAST
       LIMIT 100
@@ -301,6 +326,27 @@ export async function GET(
         // Explicit null check so a delta of exactly 0 (city == global) is kept as 0, not "N/A".
         deltaVsGlobal: deltaPercent === null ? null : parseFloat(deltaPercent.toFixed(1)),
         rankValue: config.rank_column ? (row[config.rank_column] || null) : null,
+        // Model-based 95% interval of the city's expected rate for a new video, the number
+        // of videos behind it, and its 95% rank interval among the gated cities. null for
+        // metrics the model does not cover. Percent metrics are scaled like `value`.
+        estimate: row.est_mean == null ? null : (() => {
+          const nRanked = row.est_ranked == null ? null : parseInt(row.est_ranked, 10);
+          const lo = row.est_rank_lo == null ? null : parseInt(row.est_rank_lo, 10);
+          const hi = row.est_rank_hi == null ? null : parseInt(row.est_rank_hi, 10);
+          // The model ranks 1 = HIGHEST rate. This list is ordered ASC unless
+          // higher_is_better, so there position 1 is the LOWEST rate: mirror the interval so
+          // "rank a-b of N" reads in the same direction as the #rank beside it.
+          const flip = !config.higher_is_better && nRanked != null && lo != null && hi != null;
+          return {
+            mean: parseFloat(row.est_mean) * scale,
+            low: parseFloat(row.est_low) * scale,
+            high: parseFloat(row.est_high) * scale,
+            videos: row.est_videos == null ? null : parseInt(row.est_videos, 10),
+            rankLow: flip ? nRanked! + 1 - hi! : lo,
+            rankHigh: flip ? nRanked! + 1 - lo! : hi,
+            rankedCities: nRanked,
+          };
+        })(),
       };
     });
 

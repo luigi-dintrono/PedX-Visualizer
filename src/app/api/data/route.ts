@@ -56,10 +56,32 @@ const DATA_COLUMNS = (p: string) => `
           round(${p}avg_crossing_time::numeric, 2)::float AS avg_crossing_time,
           round(${p}avg_road_width::numeric, 2)::float AS avg_road_width,
           round(${p}risky_crossing_rate::numeric, 4)::float AS risky_crossing_rate,
+          -- SAMPLE GATE for risky_crossing. Since 2026-09-07 the rate's denominator is the
+          -- crossings whose signal state was actually OBSERVED, not every pedestrian, so
+          -- total_pedestrians no longer bounds its evidence: Manila has 387 pedestrians but
+          -- only 127 determined crossings, Cincinnati has 2 and none. Gating on
+          -- total_pedestrians would pass cities whose rate rests on a handful of frames.
+          ${p}risky_crossing_determined::int AS risky_crossing_determined,
           round(${p}run_red_light_rate::numeric, 4)::float AS run_red_light_rate,
           round(${p}crosswalk_usage_rate::numeric, 4)::float AS crosswalk_usage_rate,
           round(${p}phone_usage_rate::numeric, 4)::float AS phone_usage_rate,
           round(${p}traffic_mortality::numeric, 2)::float AS traffic_mortality`;
+
+// Model-based uncertainty for the four per-pedestrian rates, from v_city_rate_estimates
+// (written by scripts/estimate_city_rates.py: city + video random effects, era fixed effect).
+// <metric>_est/_lo/_hi = posterior mean and 95% interval of the city's expected rate for a
+// new video; <metric>_videos = videos behind the rate (most cities: ONE, which is why the
+// interval is wide); _rank_lo/_rank_hi = 95% rank interval among <metric>_ranked cities.
+// The painted value stays the raw rate; these feed the hover card and the legend.
+const RATE_ESTIMATE_METRICS = ['risky_crossing', 'run_red_light', 'crosswalk_usage', 'phone_usage'] as const;
+const ESTIMATE_COLUMNS = RATE_ESTIMATE_METRICS.map((m) => `
+          e.${m}_videos::int AS ${m}_videos,
+          round(e.${m}_est::numeric, 4)::float AS ${m}_est,
+          round(e.${m}_lo::numeric, 4)::float AS ${m}_lo,
+          round(e.${m}_hi::numeric, 4)::float AS ${m}_hi,
+          e.${m}_rank_lo::int AS ${m}_rank_lo,
+          e.${m}_rank_hi::int AS ${m}_rank_hi,
+          e.${m}_ranked::int AS ${m}_ranked`).join(',');
 
 export async function GET(request: NextRequest) {
   try {
@@ -248,9 +270,10 @@ export async function GET(request: NextRequest) {
           GROUP BY c.id
           HAVING COUNT(DISTINCT p.video_id) > 0
         )
-        SELECT ${DATA_COLUMNS('vcs.')}
+        SELECT ${DATA_COLUMNS('vcs.')}, ${ESTIMATE_COLUMNS}
         FROM mv_city_summary vcs
         INNER JOIN city_filtered_counts cfc ON vcs.id = cfc.id
+        LEFT JOIN v_city_rate_estimates e ON e.city_id = vcs.id
         WHERE vcs.latitude IS NOT NULL
           AND vcs.longitude IS NOT NULL
           AND vcs.total_pedestrians > 0
@@ -261,8 +284,9 @@ export async function GET(request: NextRequest) {
       // whose INNER JOINs excluded cities with no pedestrian data — without this, such
       // cities would suddenly appear on city-level metrics like traffic_mortality.
       query = `
-        SELECT ${DATA_COLUMNS('')}
+        SELECT ${DATA_COLUMNS('')}, ${ESTIMATE_COLUMNS}
         FROM mv_city_summary
+        LEFT JOIN v_city_rate_estimates e ON e.city_id = mv_city_summary.id
         WHERE latitude IS NOT NULL AND longitude IS NOT NULL
           AND total_pedestrians > 0
       `;
@@ -337,7 +361,9 @@ export async function GET(request: NextRequest) {
 
     // Behavior filters - use rates from summary
     if (riskyCrossing === 'true') {
-      query += ` AND ${prefix}risky_crossing_rate > 0`;
+      // NOT NULL, not "> 0". NULL now means the signal state was never observed, and a
+      // genuine measured 0 is a real result that belongs in the filter.
+      query += ` AND ${prefix}risky_crossing_rate IS NOT NULL AND ${prefix}risky_crossing_rate > 0`;
     }
 
     if (runRedLight === 'true') {

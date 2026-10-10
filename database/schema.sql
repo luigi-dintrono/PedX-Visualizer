@@ -70,6 +70,12 @@ CREATE TABLE videos (
     city_link VARCHAR(255), -- city_link from CSV
     -- Video metrics
     duration_seconds DECIMAL(10, 4),
+    -- How duration_seconds was obtained: video | video_meta ([B0]) | analysis_time ([A3]).
+    -- run.py deletes the source video, so a regenerated [A1] cannot reopen it.
+    duration_source VARCHAR(32),
+    -- PedX-Insight analysis stamp (git sha + weights + config digests); NULL = unstamped.
+    -- pipeline_version is a file-existence test and cannot tell code versions apart.
+    code_version VARCHAR(96),
     total_frames INTEGER,
     analysis_seconds DECIMAL(10, 4), -- from all_time_info.csv
     -- Pedestrian counts and ratios
@@ -77,7 +83,19 @@ CREATE TABLE videos (
     total_crossed_pedestrians INTEGER,
     average_age DECIMAL(5, 2),
     phone_usage_ratio DECIMAL(5, 4),
+    -- Evidence-positive since 2026-09-07: computed only over crossings whose signal
+    -- state was actually observed. NULL when none were. See
+    -- scripts/migrate-add-metric-coverage.sql for why, and ALWAYS read it with
+    -- risky_crossing_coverage -- an ungated ratio is a biased subsample.
     risky_crossing_ratio DECIMAL(5, 4),
+    risky_crossing_coverage DECIMAL(5, 4),
+    -- Pre-2026-09 construct, kept under an honest name: share of crossing frames with
+    -- neither light nor crosswalk observed. Dominated by detector recall, NOT behaviour.
+    unsignalled_crossing_ratio DECIMAL(5, 4),
+    -- Pre-2026-09 risky construct carried by videos imported before the evidence-positive
+    -- fix (no coverage). Kept for audit only; trigger videos_risky_needs_coverage moves any
+    -- coverage-less risky_crossing_ratio here. See migrations/*_risky-crossing-evidence-only.
+    risky_crossing_ratio_legacy DECIMAL(5, 4),
     run_red_light_ratio DECIMAL(5, 4),
     crosswalk_usage_ratio DECIMAL(5, 4),
     traffic_signs_ratio DECIMAL(5, 4),
@@ -179,7 +197,9 @@ CREATE TABLE pedestrians (
     nearby_count_beginning INTEGER,
     nearby_count_whole INTEGER,
     -- Behavior
+    -- NULL = undetermined (signal state never observed). Never pool with risky_crossing_legacy.
     risky_crossing BOOLEAN,
+    risky_crossing_legacy BOOLEAN, -- old construct; see trigger pedestrians_risky_needs_coverage
     run_red_light BOOLEAN,
     crosswalk_use_or_not BOOLEAN,
     -- Demographics
@@ -332,6 +352,7 @@ CREATE INDEX idx_cities_geographic ON cities(latitude, longitude);
 CREATE INDEX idx_videos_city_id ON videos(city_id);
 CREATE INDEX idx_videos_link ON videos(link);
 CREATE INDEX idx_videos_weather ON videos(main_weather);
+CREATE INDEX idx_videos_code_version ON videos(code_version);
 CREATE INDEX idx_videos_geographic ON videos(latitude, longitude);
 CREATE INDEX idx_videos_temporal ON videos(data_collected_date, import_batch_id);
 CREATE INDEX idx_videos_first_imported ON videos(first_imported_at);
@@ -442,11 +463,6 @@ ORDER BY af.metric_name, ad.dimension_type;
 -- scripts/migrate-city-insight-metrics.sql are load-bearing: /api/data selects them
 -- (DATA_COLUMNS), so a schema.sql missing them yields a database where every
 -- /api/data request 500s. Regenerate with pg_get_viewdef rather than editing by hand.
--- Mirrored verbatim from the live database (pg_get_viewdef) so a fresh setup-db builds
--- the exact shape the app queries. The insight-metric columns appended by
--- scripts/migrate-city-insight-metrics.sql are load-bearing: /api/data selects them
--- (DATA_COLUMNS), so a schema.sql missing them yields a database where every
--- /api/data request 500s. Regenerate with pg_get_viewdef rather than editing by hand.
 CREATE OR REPLACE VIEW v_city_summary AS
 WITH vid AS (
          SELECT videos.city_id,
@@ -507,7 +523,8 @@ WITH vid AS (
          SELECT v.city_id,
             count(p.id) AS total_pedestrians,
             avg(p.age) AS avg_pedestrian_age,
-            count(*) FILTER (WHERE p.risky_crossing)::double precision / NULLIF(count(p.id), 0)::double precision AS risky_crossing_rate,
+            count(*) FILTER (WHERE p.risky_crossing)::double precision / NULLIF(count(*) FILTER (WHERE p.risky_crossing IS NOT NULL), 0)::double precision AS risky_crossing_rate,
+            count(*) FILTER (WHERE p.risky_crossing IS NOT NULL) AS risky_crossing_determined,
             count(*) FILTER (WHERE p.run_red_light)::double precision / NULLIF(count(p.id), 0)::double precision AS run_red_light_rate,
             count(*) FILTER (WHERE p.crosswalk_use_or_not)::double precision / NULLIF(count(p.id), 0)::double precision AS crosswalk_usage_rate,
             count(*) FILTER (WHERE p.phone_using)::double precision / NULLIF(count(p.id), 0)::double precision AS phone_usage_rate,
@@ -587,11 +604,11 @@ WITH vid AS (
     vid.looked_both_ways_sample,
     vid.queued_exposure_pedestrians,
     vid.dense_video_count,
-    vid.legacy_video_count
+    vid.legacy_video_count,
+    ped.risky_crossing_determined
    FROM cities c
      LEFT JOIN vid ON vid.city_id = c.id
-     LEFT JOIN ped ON ped.city_id = c.id
-;
+     LEFT JOIN ped ON ped.city_id = c.id;
 
 CREATE OR REPLACE VIEW v_video_summary AS
 SELECT 
@@ -899,10 +916,10 @@ CROSS JOIN
         AVG(age) AS global_avg_pedestrian_age,
         PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY age) AS global_median_pedestrian_age,
         COUNT(*) AS total_pedestrians,
-        COUNT(*) FILTER (WHERE risky_crossing)::FLOAT      / NULLIF(COUNT(*), 0) AS global_risky_crossing_rate,
-        COUNT(*) FILTER (WHERE run_red_light)::FLOAT       / NULLIF(COUNT(*), 0) AS global_run_red_light_rate,
-        COUNT(*) FILTER (WHERE crosswalk_use_or_not)::FLOAT/ NULLIF(COUNT(*), 0) AS global_crosswalk_usage_rate,
-        COUNT(*) FILTER (WHERE phone_using)::FLOAT         / NULLIF(COUNT(*), 0) AS global_phone_usage_rate
+        COUNT(*) FILTER (WHERE risky_crossing)::FLOAT      / NULLIF(COUNT(risky_crossing), 0) AS global_risky_crossing_rate,
+        COUNT(*) FILTER (WHERE run_red_light)::FLOAT       / NULLIF(COUNT(run_red_light), 0) AS global_run_red_light_rate,
+        COUNT(*) FILTER (WHERE crosswalk_use_or_not)::FLOAT/ NULLIF(COUNT(crosswalk_use_or_not), 0) AS global_crosswalk_usage_rate,
+        COUNT(*) FILTER (WHERE phone_using)::FLOAT         / NULLIF(COUNT(phone_using), 0) AS global_phone_usage_rate
      FROM pedestrians) ped
 CROSS JOIN
     (SELECT COUNT(*) AS total_cities FROM cities) cnt;
@@ -910,7 +927,6 @@ CROSS JOIN
 -- mv_city_insights: Pre-computed insights data per city
 -- video-level and pedestrian-level metrics aggregated in separate CTEs (no fan-out).
 -- Adds crosswalk_usage_rank so /api/metrics/crosswalk_usage can read it here.
--- Mirrored verbatim from the live database (pg_get_viewdef). See the note on v_city_summary.
 -- Mirrored verbatim from the live database (pg_get_viewdef). See the note on v_city_summary.
 CREATE MATERIALIZED VIEW mv_city_insights AS
 WITH vid AS (
@@ -951,7 +967,15 @@ WITH vid AS (
             avg(videos.mean_headway_s) AS avg_headway_s,
             sum(videos.n_social_groups) AS total_social_groups,
             percentile_cont(0.5::double precision) WITHIN GROUP (ORDER BY (videos.measured_walking_speed_mps::double precision)) AS median_measured_walking_speed,
-            count(videos.measured_walking_speed_mps) AS measured_speed_video_count
+            count(videos.measured_walking_speed_mps) AS measured_speed_video_count,
+            100::double precision * sum(videos.pet_severe_conflicts)::double precision / NULLIF(sum(videos.total_pedestrians) FILTER (WHERE videos.pet_severe_conflicts IS NOT NULL), 0)::double precision AS severe_conflicts_per_100_ped,
+            sum(videos.total_pedestrians) FILTER (WHERE videos.pet_severe_conflicts IS NOT NULL) AS pet_exposure_pedestrians,
+            sum(videos.grouped_pedestrians) FILTER (WHERE videos.pipeline_version = 'dense_v2'::text)::double precision / NULLIF(sum(videos.total_pedestrians) FILTER (WHERE videos.n_social_groups IS NOT NULL AND videos.pipeline_version = 'dense_v2'::text), 0)::double precision AS grouped_pedestrian_share_dense,
+            sum(videos.total_pedestrians) FILTER (WHERE videos.n_social_groups IS NOT NULL AND videos.pipeline_version = 'dense_v2'::text) AS social_dense_pedestrians,
+            avg(videos.hesitation_rate) FILTER (WHERE videos.pipeline_version = 'dense_v2'::text) AS avg_hesitation_rate_dense,
+            sum(videos.total_pedestrians) FILTER (WHERE videos.hesitation_rate IS NOT NULL AND videos.pipeline_version = 'dense_v2'::text) AS hesitation_dense_pedestrians,
+            sum(videos.total_crossed_pedestrians) FILTER (WHERE videos.look_before_cross_frac IS NOT NULL) AS look_before_cross_sample,
+            sum(videos.total_vehicles) FILTER (WHERE videos.vehicle_median_speed_mps IS NOT NULL) AS vehicle_speed_sample
            FROM videos
           GROUP BY videos.city_id
         ), ped AS (
@@ -959,7 +983,10 @@ WITH vid AS (
             count(p.id) AS pedestrian_count,
             avg(p.age) AS avg_age,
             count(*) FILTER (WHERE p.gender::text = 'male'::text)::double precision / NULLIF(count(p.id), 0)::double precision AS male_ratio,
-            count(*) FILTER (WHERE p.phone_using)::double precision / NULLIF(count(p.id), 0)::double precision AS phone_usage_ratio
+            count(*) FILTER (WHERE p.phone_using)::double precision / NULLIF(count(p.id), 0)::double precision AS phone_usage_ratio,
+            count(p.age) AS age_sample,
+            count(p.walking_speed_mps) AS measured_walking_ped_sample,
+            count(*) FILTER (WHERE p.risky_crossing IS NOT NULL) AS risky_crossing_determined
            FROM pedestrians p
              JOIN videos v ON v.id = p.video_id
           GROUP BY v.city_id
@@ -971,6 +998,7 @@ WITH vid AS (
             c.med_age AS city_med_age,
             COALESCE(vid.video_count, 0::bigint) AS video_count,
             COALESCE(ped.pedestrian_count, 0::bigint) AS pedestrian_count,
+            COALESCE(ped.risky_crossing_determined, 0::bigint) AS risky_crossing_determined,
             vid.avg_crossing_speed,
             vid.median_crossing_speed,
             vid.avg_risky_crossing_ratio,
@@ -1009,7 +1037,17 @@ WITH vid AS (
             vid.avg_hesitation_rate,
             vid.avg_vehicle_speed,
             vid.avg_headway_s,
-            vid.total_social_groups
+            vid.total_social_groups,
+            vid.severe_conflicts_per_100_ped,
+            vid.pet_exposure_pedestrians,
+            vid.grouped_pedestrian_share_dense,
+            vid.social_dense_pedestrians,
+            vid.avg_hesitation_rate_dense,
+            vid.hesitation_dense_pedestrians,
+            vid.look_before_cross_sample,
+            vid.vehicle_speed_sample,
+            ped.age_sample,
+            ped.measured_walking_ped_sample
            FROM cities c
              LEFT JOIN vid ON vid.city_id = c.id
              LEFT JOIN ped ON ped.city_id = c.id
@@ -1026,6 +1064,7 @@ WITH vid AS (
     base.city_med_age,
     base.video_count,
     base.pedestrian_count,
+    base.risky_crossing_determined,
     base.avg_crossing_speed,
     rank() OVER (ORDER BY base.avg_crossing_speed DESC NULLS LAST) AS speed_rank,
     base.median_crossing_speed,
@@ -1073,10 +1112,19 @@ WITH vid AS (
     base.avg_hesitation_rate,
     base.avg_vehicle_speed,
     base.avg_headway_s,
-    base.total_social_groups
+    base.total_social_groups,
+    base.severe_conflicts_per_100_ped,
+    base.pet_exposure_pedestrians,
+    base.grouped_pedestrian_share_dense,
+    base.social_dense_pedestrians,
+    base.avg_hesitation_rate_dense,
+    base.hesitation_dense_pedestrians,
+    base.look_before_cross_sample,
+    base.vehicle_speed_sample,
+    base.age_sample,
+    base.measured_walking_ped_sample
    FROM base
-     LEFT JOIN measured_ranked ON measured_ranked.city_id = base.city_id
-;
+     LEFT JOIN measured_ranked ON measured_ranked.city_id = base.city_id;
 
 CREATE INDEX IF NOT EXISTS idx_mv_city_insights_city ON mv_city_insights(city_id);
 CREATE INDEX IF NOT EXISTS idx_mv_city_insights_continent ON mv_city_insights(continent);
@@ -1349,6 +1397,42 @@ CREATE TRIGGER update_pedestrians_updated_at BEFORE UPDATE ON pedestrians
 CREATE TRIGGER update_analytics_facts_updated_at BEFORE UPDATE ON analytics_facts
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+-- A risky-crossing value is only meaningful where the signal state was observed
+-- (videos.risky_crossing_coverage). Coerce, don't reject, so an import can never fail on it:
+-- a coverage-less value is undetermined by definition. The old value is kept in *_legacy.
+CREATE OR REPLACE FUNCTION videos_risky_needs_coverage() RETURNS trigger
+LANGUAGE plpgsql AS $fn$
+BEGIN
+    IF NEW.risky_crossing_coverage IS NULL AND NEW.risky_crossing_ratio IS NOT NULL THEN
+        NEW.risky_crossing_ratio_legacy := NEW.risky_crossing_ratio;
+        NEW.risky_crossing_ratio := NULL;
+    END IF;
+    RETURN NEW;
+END
+$fn$;
+
+CREATE OR REPLACE FUNCTION pedestrians_risky_needs_coverage() RETURNS trigger
+LANGUAGE plpgsql AS $fn$
+BEGIN
+    IF NEW.risky_crossing IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM videos v
+         WHERE v.id = NEW.video_id AND v.risky_crossing_coverage IS NOT NULL
+    ) THEN
+        NEW.risky_crossing_legacy := NEW.risky_crossing;
+        NEW.risky_crossing := NULL;
+    END IF;
+    RETURN NEW;
+END
+$fn$;
+
+CREATE TRIGGER videos_risky_needs_coverage
+    BEFORE INSERT OR UPDATE OF risky_crossing_ratio, risky_crossing_coverage ON videos
+    FOR EACH ROW EXECUTE FUNCTION videos_risky_needs_coverage();
+
+CREATE TRIGGER pedestrians_risky_needs_coverage
+    BEFORE INSERT OR UPDATE OF risky_crossing, video_id ON pedestrians
+    FOR EACH ROW EXECUTE FUNCTION pedestrians_risky_needs_coverage();
+
 -- ===============================================
 -- TEMPORAL DATA FUNCTIONS
 -- ===============================================
@@ -1413,10 +1497,10 @@ BEGIN
             v.city_id,
             COUNT(p.id) AS total_pedestrians,
             AVG(p.age)  AS avg_pedestrian_age,
-            COUNT(*) FILTER (WHERE p.risky_crossing)::FLOAT       / NULLIF(COUNT(p.id), 0) AS risky_crossing_rate,
-            COUNT(*) FILTER (WHERE p.run_red_light)::FLOAT        / NULLIF(COUNT(p.id), 0) AS run_red_light_rate,
-            COUNT(*) FILTER (WHERE p.crosswalk_use_or_not)::FLOAT / NULLIF(COUNT(p.id), 0) AS crosswalk_usage_rate,
-            COUNT(*) FILTER (WHERE p.phone_using)::FLOAT          / NULLIF(COUNT(p.id), 0) AS phone_usage_rate
+            COUNT(*) FILTER (WHERE p.risky_crossing)::FLOAT       / NULLIF(COUNT(p.risky_crossing), 0) AS risky_crossing_rate,
+            COUNT(*) FILTER (WHERE p.run_red_light)::FLOAT        / NULLIF(COUNT(p.run_red_light), 0) AS run_red_light_rate,
+            COUNT(*) FILTER (WHERE p.crosswalk_use_or_not)::FLOAT / NULLIF(COUNT(p.crosswalk_use_or_not), 0) AS crosswalk_usage_rate,
+            COUNT(*) FILTER (WHERE p.phone_using)::FLOAT          / NULLIF(COUNT(p.phone_using), 0) AS phone_usage_rate
         FROM pedestrians p
         JOIN videos v ON v.id = p.video_id
         WHERE (v.data_collected_date IS NULL OR v.data_collected_date <= target_date)
@@ -1547,3 +1631,97 @@ BEGIN
     ORDER BY ib.import_date DESC;
 END;
 $$ LANGUAGE plpgsql;
+
+-- ===============================================
+-- Per-city rate estimates with uncertainty (migrations/1791625343214_city-metric-estimates.sql)
+-- ===============================================
+--
+-- Per-city rate estimates WITH uncertainty, written by scripts/estimate_city_rates.py
+-- (hierarchical binomial model: city and video-within-city random effects, measurement era
+-- as a fixed effect, NUTS via NumPyro). The raw rate on the globe is a point estimate whose
+-- precision depends on how many VIDEOS stand behind it, not how many pedestrians: most
+-- cities rest on one video, so their pedestrians share one camera, one time, one weather.
+-- These tables carry the interval and the video count the globe and leaderboard show.
+
+CREATE TABLE metric_model_runs (
+    id                 SERIAL PRIMARY KEY,
+    metric             VARCHAR(40) NOT NULL,
+    fitted_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- false = fit failed its convergence/predictive checks; published estimates untouched
+    accepted           BOOLEAN NOT NULL,
+    eras               TEXT,               -- measurement eras in the fit, reference first
+    era_effects        TEXT,               -- posterior mean logit shift of each non-reference era
+    n_videos           INTEGER NOT NULL,
+    n_cities           INTEGER NOT NULL,
+    n_obs              INTEGER NOT NULL,
+    sigma_city_mean    DOUBLE PRECISION,   -- between-city SD (logit scale)
+    sigma_city_low     DOUBLE PRECISION,
+    sigma_city_high    DOUBLE PRECISION,
+    sigma_video_mean   DOUBLE PRECISION,   -- between-video-within-city SD (logit scale)
+    sigma_video_low    DOUBLE PRECISION,
+    sigma_video_high   DOUBLE PRECISION,
+    city_share_mean    DOUBLE PRECISION,   -- rho = sigma_city^2 / (sigma_city^2 + sigma_video^2)
+    city_share_low     DOUBLE PRECISION,
+    city_share_high    DOUBLE PRECISION,
+    ppc_dispersion_p   DOUBLE PRECISION,   -- posterior predictive p, between-video spread
+    ppc_zeros_p        DOUBLE PRECISION,   -- posterior predictive p, share of zero-event videos
+    max_rhat           DOUBLE PRECISION,
+    min_ess            DOUBLE PRECISION,
+    divergences        INTEGER,
+    chains             INTEGER,
+    draws              INTEGER,
+    seed               BIGINT,
+    script_digest      VARCHAR(16)
+);
+CREATE INDEX idx_metric_model_runs_metric ON metric_model_runs (metric, fitted_at DESC);
+
+CREATE TABLE city_metric_estimates (
+    city_id       INTEGER NOT NULL REFERENCES cities(id) ON DELETE CASCADE,
+    metric        VARCHAR(40) NOT NULL,
+    n_obs         INTEGER NOT NULL,          -- pedestrians whose flag is known
+    n_successes   INTEGER NOT NULL,
+    n_videos      INTEGER NOT NULL,
+    raw_rate      DOUBLE PRECISION NOT NULL, -- n_successes / n_obs, as on the globe
+    est_mean      DOUBLE PRECISION NOT NULL, -- posterior mean expected rate for a new video
+    est_low       DOUBLE PRECISION NOT NULL, -- 95% credible interval
+    est_high      DOUBLE PRECISION NOT NULL,
+    rank_low      INTEGER,                   -- 95% interval of rank (1 = highest rate) among
+    rank_high     INTEGER,                   --   the ranked_cities passing the n_obs >= 30 gate
+    ranked_cities INTEGER,
+    model_run_id  INTEGER NOT NULL REFERENCES metric_model_runs(id),
+    PRIMARY KEY (city_id, metric)
+);
+
+-- One row per city, one column group per metric, for a single LEFT JOIN in the API.
+CREATE VIEW v_city_rate_estimates AS
+SELECT city_id,
+       max(n_videos)   FILTER (WHERE metric = 'risky_crossing')  AS risky_crossing_videos,
+       max(est_mean)   FILTER (WHERE metric = 'risky_crossing')  AS risky_crossing_est,
+       max(est_low)    FILTER (WHERE metric = 'risky_crossing')  AS risky_crossing_lo,
+       max(est_high)   FILTER (WHERE metric = 'risky_crossing')  AS risky_crossing_hi,
+       max(rank_low)   FILTER (WHERE metric = 'risky_crossing')  AS risky_crossing_rank_lo,
+       max(rank_high)  FILTER (WHERE metric = 'risky_crossing')  AS risky_crossing_rank_hi,
+       max(n_videos)   FILTER (WHERE metric = 'run_red_light')   AS run_red_light_videos,
+       max(est_mean)   FILTER (WHERE metric = 'run_red_light')   AS run_red_light_est,
+       max(est_low)    FILTER (WHERE metric = 'run_red_light')   AS run_red_light_lo,
+       max(est_high)   FILTER (WHERE metric = 'run_red_light')   AS run_red_light_hi,
+       max(rank_low)   FILTER (WHERE metric = 'run_red_light')   AS run_red_light_rank_lo,
+       max(rank_high)  FILTER (WHERE metric = 'run_red_light')   AS run_red_light_rank_hi,
+       max(n_videos)   FILTER (WHERE metric = 'crosswalk_usage') AS crosswalk_usage_videos,
+       max(est_mean)   FILTER (WHERE metric = 'crosswalk_usage') AS crosswalk_usage_est,
+       max(est_low)    FILTER (WHERE metric = 'crosswalk_usage') AS crosswalk_usage_lo,
+       max(est_high)   FILTER (WHERE metric = 'crosswalk_usage') AS crosswalk_usage_hi,
+       max(rank_low)   FILTER (WHERE metric = 'crosswalk_usage') AS crosswalk_usage_rank_lo,
+       max(rank_high)  FILTER (WHERE metric = 'crosswalk_usage') AS crosswalk_usage_rank_hi,
+       max(n_videos)   FILTER (WHERE metric = 'phone_usage')     AS phone_usage_videos,
+       max(est_mean)   FILTER (WHERE metric = 'phone_usage')     AS phone_usage_est,
+       max(est_low)    FILTER (WHERE metric = 'phone_usage')     AS phone_usage_lo,
+       max(est_high)   FILTER (WHERE metric = 'phone_usage')     AS phone_usage_hi,
+       max(rank_low)   FILTER (WHERE metric = 'phone_usage')     AS phone_usage_rank_lo,
+       max(rank_high)  FILTER (WHERE metric = 'phone_usage')     AS phone_usage_rank_hi,
+       max(ranked_cities) FILTER (WHERE metric = 'risky_crossing')  AS risky_crossing_ranked,
+       max(ranked_cities) FILTER (WHERE metric = 'run_red_light')   AS run_red_light_ranked,
+       max(ranked_cities) FILTER (WHERE metric = 'crosswalk_usage') AS crosswalk_usage_ranked,
+       max(ranked_cities) FILTER (WHERE metric = 'phone_usage')     AS phone_usage_ranked
+  FROM city_metric_estimates
+ GROUP BY city_id;

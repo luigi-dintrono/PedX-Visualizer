@@ -175,10 +175,12 @@ const METRIC_CONFIG: Record<string, MetricConfig> = {
       min: [0, 1, 0, 0.6], // Green for low risk (RGBA)
       max: [1, 0, 0, 0.8], // Red for high risk (RGBA)
     },
-    // total_pedestrians IS the exact denominator of this rate. Without the gate, 302 of the
-    // 470 painted cities rest on 1-9 pedestrians and nine paint exactly 1.000 off a single
-    // one — the same defect as the crossing-speed layer, at 25x the scale.
-    sample: { property: 'total_pedestrians', minN: 30, noun: 'pedestrians' },
+    // Gate on DETERMINED crossings, not total_pedestrians. Until 2026-09-07 the two were
+    // the same thing; now the rate's denominator is only those crossings whose signal
+    // state was actually observed, so total_pedestrians overstates the evidence — Manila
+    // has 387 pedestrians but 127 determined crossings, Cincinnati 2 and none at all.
+    // Gating on the old column would paint cities whose rate rests on a handful of frames.
+    sample: { property: 'risky_crossing_determined', minN: 30, noun: 'determined crossings' },
   },
   run_red_light: {
     property: 'run_red_light_rate',
@@ -385,6 +387,10 @@ function readNumber(item: any, prop: string): number | null {
   const n = typeof raw === 'string' ? parseFloat(raw) : (raw as number);
   return Number.isFinite(n) ? n : null;
 }
+
+// Metrics with a model-based interval in /api/data (<key>_est/_lo/_hi/_videos/_rank_*).
+// Keys match METRIC_CONFIG and RATE_ESTIMATE_METRICS in api/data/route.ts.
+const RATE_ESTIMATE_KEYS = new Set(['risky_crossing', 'run_red_light', 'crosswalk_usage', 'phone_usage']);
 
 // Rates and fractions are stored 0-1 but labelled '%'; printing them raw gave "0.89 %".
 function formatMetric(v: number, unit: string): string {
@@ -1117,10 +1123,31 @@ export default function Globe() {
               // Clears the bar, but too few peers did to form a scale. Saying "too few to
               // rank" here would tell a city with n=86 that 86 is fewer than 10.
               : `Based on ${sampleN.toLocaleString()} ${rule.noun} — no scale: only ${rankedData.length} cit${rankedData.length === 1 ? 'y' : 'ies'} qualify`;
+      // Model-based uncertainty (scripts/estimate_city_rates.py). The pedestrian count above
+      // overstates precision: one video is one place, one time, one camera, so a single-video
+      // city's interval is at least as wide as the spread between videos — by design.
+      const est = RATE_ESTIMATE_KEYS.has(metricType) ? (item as any) : null;
+      const estMean = est ? num(est[`${metricType}_est`]) : null;
+      const estLo = est ? num(est[`${metricType}_lo`]) : null;
+      const estHi = est ? num(est[`${metricType}_hi`]) : null;
+      const estVideos = est ? num(est[`${metricType}_videos`]) : null;
+      const rankLo = est ? num(est[`${metricType}_rank_lo`]) : null;
+      const rankHi = est ? num(est[`${metricType}_rank_hi`]) : null;
+      const rankedN = est ? num(est[`${metricType}_ranked`]) : null;
+      const pct0 = (v: number) => `${(v * 100).toFixed(0)}%`;
+      const uncertaintyLine = estMean != null && estLo != null && estHi != null
+        ? `Model: ${pct0(estMean)} (95% interval ${pct0(estLo)}–${pct0(estHi)})` +
+          (estVideos != null ? ` · ${estVideos} video${estVideos === 1 ? '' : 's'}` : '')
+        : null;
+      const rankLine = rankLo != null && rankHi != null && rankedN != null
+        ? `Rank by rate (1 = highest): ${rankLo === rankHi ? rankLo : `${rankLo}–${rankHi}`} of ${rankedN}, 95% interval`
+        : null;
       const labelText = [
         `${item.city}, ${item.country}`,
         `${config.name}: ${formatMetric(value, config.unit)}`,
         evidenceLine,
+        uncertaintyLine,
+        rankLine,
         population ? `Population: ${population.toLocaleString()}` : null,
         totalVideos != null && totalPeds != null
           ? `City totals: ${totalVideos} video${totalVideos === 1 ? '' : 's'} · ${totalPeds.toLocaleString()} pedestrians`
@@ -2420,6 +2447,13 @@ export default function Globe() {
 
                   {/* Metric-specific comparability warning / provenance, where one applies */}
                   {cfg.caveat && <div className="mt-2 text-amber-300">⚠ {cfg.caveat}</div>}
+                  {RATE_ESTIMATE_KEYS.has(selectedMetrics[0]) && (
+                    <div className="mt-2 text-gray-400">
+                      Colour is the raw rate. Most cities rest on a single video, so the hover card
+                      adds a model-based 95% interval and rank range; differences between videos
+                      are as large as differences between cities, so nearby ranks are not distinguishable.
+                    </div>
+                  )}
                   {cfg.provenance && <div className="mt-2 text-gray-400">Source: {cfg.provenance}</div>}
                 </div>
               </div>
