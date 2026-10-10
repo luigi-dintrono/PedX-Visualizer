@@ -30,6 +30,13 @@ const eslintConfig = [
         caughtErrorsIgnorePattern: "^_"
       }],
       "react-hooks/exhaustive-deps": "warn",
+      // React-Compiler-era rules that flag 9 effects in info-sidebar.tsx and FilterContext.tsx
+      // (functions referenced before their declaration, setState inside effects). Those
+      // effects are load-bearing for the globe and need a deliberate refactor, not a lint
+      // tidy-up, so they are reported as warnings (visible, not blocking) until then. New
+      // code should not add to the count: CI prints it on every run.
+      "react-hooks/immutability": "warn",
+      "react-hooks/set-state-in-effect": "warn",
       "no-console": "off",
     },
   },

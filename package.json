@@ -29,8 +29,15 @@
     "db:migrate-fix-plpgsql": "node scripts/run-sql.js scripts/migrate-fix-plpgsql-result-types.sql",
     "db:migrate-insights-gates": "node scripts/run-sql.js scripts/migrate-insights-sample-gates.sql",
     "db:migrate-sample-gates": "node scripts/run-sql.js scripts/migrate-metric-sample-gates.sql",
+    "db:migrate-metric-coverage": "node scripts/run-sql.js scripts/migrate-add-metric-coverage.sql",
+    "db:migrate-risky-denominator": "node scripts/run-sql.js scripts/migrate-fix-risky-denominator.sql",
+    "db:migrate-risky-determined-insights": "node scripts/run-sql.js scripts/migrate-add-risky-determined-insights.sql",
     "db:migrate-localization-route": "node scripts/run-sql.js scripts/migrate-add-localization-route.sql",
-    "db:publish": "node scripts/aggregate-csv-data.js && node scripts/import-video-coordinates.js && node scripts/refresh-views.js && node scripts/generate-city-insights.js && node scripts/refresh-views.js"
+    "model:rates": "node scripts/run-rate-model.js",
+    "db:migrate": "node-pg-migrate up -m migrations --envPath .env.local",
+    "db:migrate:down": "node-pg-migrate down -m migrations --envPath .env.local",
+    "db:migrate:create": "node-pg-migrate create -m migrations --migration-file-language sql",
+    "db:publish": "node scripts/aggregate-csv-data.js && node scripts/import-video-coordinates.js && node scripts/run-rate-model.js && node scripts/refresh-views.js && node scripts/generate-city-insights.js && node scripts/refresh-views.js"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.16",
@@ -77,6 +84,7 @@
     "copy-webpack-plugin": "^14.0.0",
     "eslint": "^9.39.5",
     "eslint-config-next": "^16.2.10",
+    "node-pg-migrate": "^9.0.0",
     "typescript": "^5",
     "webpack": "^5.108.4"
   }

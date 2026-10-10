@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  app:
+    name: Typecheck, lint, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # `next build` no longer type-checks for us only if ignoreBuildErrors is re-enabled;
+      # running tsc first gives a faster, clearer failure than the build does.
+      - run: npx tsc --noEmit
+      # 0 errors required. Warnings (known React-Compiler-rule debt) are printed, not blocking.
+      - run: npm run lint
+      - run: npm run build
+        env:
+          # The DB pool is created at import time but never connects during the build.
+          DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+
+  database:
+    name: schema.sql builds and matches the migrations
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: pedx
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:ci@localhost:5432/pedx
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # A fresh database built from schema.sql must load without error...
+      - run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f database/schema.sql
+      # ...and already contain every migration's end state, so the migrations are recorded
+      # as applied rather than re-run (schema.sql is the from-scratch path, migrations/ the
+      # upgrade path for an existing database).
+      - run: npx node-pg-migrate up -m migrations --fake
+      - run: node scripts/refresh-views.js
+      # A migration added without mirroring it in schema.sql is caught here: the invariant
+      # triggers, the new columns and the estimate tables are part of the end state.
+      - run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          BEGIN
+            IF (SELECT count(*) FROM pg_trigger WHERE tgname IN
+                  ('videos_risky_needs_coverage','pedestrians_risky_needs_coverage')) <> 2 THEN
+              RAISE EXCEPTION 'schema.sql is missing the risky-crossing invariant triggers';
+            END IF;
+            IF (SELECT count(*) FROM information_schema.columns
+                 WHERE table_name = 'videos'
+                   AND column_name IN ('code_version', 'risky_crossing_ratio_legacy')) <> 2 THEN
+              RAISE EXCEPTION 'schema.sql is missing videos.code_version / risky_crossing_ratio_legacy';
+            END IF;
+            PERFORM 1 FROM v_city_rate_estimates LIMIT 1;  -- exists and is selectable
+          END $$;
+          SQL

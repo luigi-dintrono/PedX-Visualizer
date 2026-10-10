@@ -18,7 +18,9 @@ const path = require('path');
 const csv = require('csv-parser');
 
 // Configuration
-const DEFAULT_SOURCE_DIR = '/Users/luigi/Downloads/data_code/pedx_crawler_data';
+// No default path: it used to be one developer's Downloads folder. Pass --source-dir or set
+// PEDX_CRAWLER_DATA_DIR.
+const DEFAULT_SOURCE_DIR = process.env.PEDX_CRAWLER_DATA_DIR || '';
 const TARGET_DIR = path.join(__dirname, '..', 'summary_data');
 const VERBOSE = process.argv.includes('--verbose');
 
@@ -27,6 +29,11 @@ const sourceDirArg = process.argv.indexOf('--source-dir');
 const SOURCE_DIR = sourceDirArg !== -1 && process.argv[sourceDirArg + 1] 
     ? process.argv[sourceDirArg + 1]
     : DEFAULT_SOURCE_DIR;
+
+if (!SOURCE_DIR) {
+    console.error('❌ No source directory: pass --source-dir <path> or set PEDX_CRAWLER_DATA_DIR');
+    process.exit(1);
+}
 
 // CSV files to copy directly (ignore in city folders)
 const DIRECT_COPY_FILES = ['all_video_info.csv', 'all_time_info.csv', 'all_pedestrian_info.csv'];

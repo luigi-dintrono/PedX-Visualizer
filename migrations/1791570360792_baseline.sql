@@ -1,0 +1,11 @@
+-- Up Migration
+--
+-- Baseline marker. Everything up to 2026-10-09 was applied by hand from
+-- scripts/migrate-*.sql (via `npm run db:migrate-*` / scripts/run-sql.js) and is mirrored
+-- in database/schema.sql. From here on, schema changes are node-pg-migrate migrations in
+-- this directory: `npm run db:migrate` applies pending ones, `npm run db:migrate:create
+-- <name>` scaffolds a new one. A fresh database is still built from database/schema.sql
+-- (which already contains every migration's end state), then marked migrated with
+-- `npm run db:migrate -- --fake`.
+
+-- Down Migration

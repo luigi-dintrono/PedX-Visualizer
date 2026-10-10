@@ -7,7 +7,6 @@
 .PHONY: geonames-update geonames-report geonames-help
 .PHONY: full-pipeline check-env check-deps
 .PHONY: aggregate-crawler-data aggregate-crawler-data-verbose
-.PHONY: fix-encoding fix-encoding-verbose fix-encoding-direct fix-encoding-direct-verbose fix-encoding-sql fix-encoding-complete fix-encoding-proper fix-encoding-final fix-encoding-mapping
 
 # Default target
 .DEFAULT_GOAL := help
@@ -145,116 +144,6 @@ aggregate-crawler-data-verbose: ## Aggregate with verbose logging
 	@node scripts/aggregate-pedx-crawler-data.js --verbose
 	@echo "$(GREEN)✓ Crawler data aggregation complete$(NC)"
 
-fix-encoding: ## Fix encoding issues in database city names
-	@echo "$(BLUE)Fixing encoding issues in database...$(NC)"
-	@if [ -f .env ]; then \
-		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
-		node scripts/fix-encoding.js; \
-		echo "$(GREEN)✓ Encoding fix complete$(NC)"; \
-	else \
-		echo "$(RED)Error: .env file not found. Run 'make setup' first$(NC)"; \
-		exit 1; \
-	fi
-
-fix-encoding-verbose: ## Fix encoding with verbose logging
-	@echo "$(BLUE)Fixing encoding issues (verbose)...$(NC)"
-	@if [ -f .env ]; then \
-		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
-		node scripts/fix-encoding.js --verbose; \
-		echo "$(GREEN)✓ Encoding fix complete$(NC)"; \
-	else \
-		echo "$(RED)Error: .env file not found. Run 'make setup' first$(NC)"; \
-		exit 1; \
-	fi
-
-fix-encoding-direct: ## Direct encoding fix - reads CSV and updates DB directly
-	@echo "$(BLUE)Direct encoding fix...$(NC)"
-	@if [ -f .env ]; then \
-		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
-		node scripts/fix-encoding-direct.js; \
-		echo "$(GREEN)✓ Direct encoding fix complete$(NC)"; \
-	else \
-		echo "$(RED)Error: .env file not found. Run 'make setup' first$(NC)"; \
-		exit 1; \
-	fi
-
-fix-encoding-direct-verbose: ## Direct encoding fix with verbose logging
-	@echo "$(BLUE)Direct encoding fix (verbose)...$(NC)"
-	@if [ -f .env ]; then \
-		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
-		node scripts/fix-encoding-direct.js --verbose; \
-		echo "$(GREEN)✓ Direct encoding fix complete$(NC)"; \
-	else \
-		echo "$(RED)Error: .env file not found. Run 'make setup' first$(NC)"; \
-		exit 1; \
-	fi
-
-fix-encoding-sql-script: ## SQL-based encoding fix script - finds and fixes corrupted city names
-	@echo "$(BLUE)SQL-based encoding fix...$(NC)"
-	@if [ -f .env ]; then \
-		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
-		node scripts/fix-encoding-sql.js; \
-		echo "$(GREEN)✓ SQL encoding fix complete$(NC)"; \
-	else \
-		echo "$(RED)Error: .env file not found. Run 'make setup' first$(NC)"; \
-		exit 1; \
-	fi
-
-fix-encoding-complete: ## Complete encoding fix - simple and direct
-	@echo "$(BLUE)Complete encoding fix...$(NC)"
-	@if [ -f .env ]; then \
-		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
-		node scripts/fix-encoding-complete.js; \
-		echo "$(GREEN)✓ Complete encoding fix done$(NC)"; \
-	else \
-		echo "$(RED)Error: .env file not found. Run 'make setup' first$(NC)"; \
-		exit 1; \
-	fi
-
-fix-encoding-proper: ## Proper encoding fix - reads CSV as binary and converts properly
-	@echo "$(BLUE)Proper encoding fix...$(NC)"
-	@if [ -f .env ]; then \
-		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
-		node scripts/fix-encoding-proper.js; \
-		echo "$(GREEN)✓ Proper encoding fix done$(NC)"; \
-	else \
-		echo "$(RED)Error: .env file not found. Run 'make setup' first$(NC)"; \
-		exit 1; \
-	fi
-
-fix-encoding-final: ## Final encoding fix - uses known corrections and proper encoding conversion
-	@echo "$(BLUE)Final encoding fix...$(NC)"
-	@if [ -f .env ]; then \
-		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
-		node scripts/fix-encoding-final.js; \
-		echo "$(GREEN)✓ Final encoding fix done$(NC)"; \
-	else \
-		echo "$(RED)Error: .env file not found. Run 'make setup' first$(NC)"; \
-		exit 1; \
-	fi
-
-fix-encoding-mapping: ## Direct encoding fix using hardcoded known mappings
-	@echo "$(BLUE)Direct encoding fix with known mappings...$(NC)"
-	@if [ -f .env ]; then \
-		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
-		node scripts/fix-encoding-direct-mapping.js; \
-		echo "$(GREEN)✓ Direct mapping fix done$(NC)"; \
-	else \
-		echo "$(RED)Error: .env file not found. Run 'make setup' first$(NC)"; \
-		exit 1; \
-	fi
-
-fix-encoding-sql: ## Fix encoding using direct SQL script
-	@echo "$(BLUE)Fixing encoding with SQL script...$(NC)"
-	@if [ -f .env ]; then \
-		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
-		psql $$DATABASE_URL -f scripts/fix-encoding.sql; \
-		echo "$(GREEN)✓ SQL encoding fix done$(NC)"; \
-	else \
-		echo "$(RED)Error: .env file not found. Run 'make setup' first$(NC)"; \
-		exit 1; \
-	fi
-
 fix-age-data: ## Check and report on age data status in database
 	@echo "$(BLUE)Checking age data status...$(NC)"
 	@node scripts/fix-age-data.js
@@ -344,7 +233,7 @@ db-generate-insights-dry: ## Test insights generation without updating database
 		exit 1; \
 	fi
 
-db-pipeline: db-aggregate db-import-video-coordinates fix-encoding-mapping db-refresh-views db-generate-insights ## Complete database update pipeline
+db-pipeline: db-aggregate db-import-video-coordinates db-refresh-views db-generate-insights ## Complete database update pipeline
 	@echo "$(GREEN)✓ Database pipeline complete (with insights)$(NC)"
 
 db-migrate-localization-fields: ## Add localization provenance columns (street name, confidence, status)
@@ -393,37 +282,12 @@ db-migrate-video-coordinates: ## Apply video coordinates migration to existing d
 		exit 1; \
 	fi
 
-db-add-mock-video-coordinates: ## Add mock coordinate data to videos
-	@echo "$(BLUE)Adding mock video coordinates...$(NC)"
-	@if [ -f .env.local ]; then \
-		node scripts/add-mock-video-coordinates.js; \
-		echo "$(GREEN)✓ Mock video coordinates added$(NC)"; \
-	else \
-		echo "$(RED)Error: .env.local file not found$(NC)"; \
-		exit 1; \
-	fi
-
 db-migrate-temporal-tracking: ## Apply temporal data tracking migration
 	@echo "$(BLUE)Applying temporal data tracking migration...$(NC)"
 	@if [ -f .env.local ]; then \
 		export $$(grep -v '^#' .env.local | grep -v '^$$' | xargs) && \
 		psql $$DATABASE_URL -f scripts/migrate-add-temporal-tracking.sql; \
 		echo "$(GREEN)✓ Temporal tracking migration complete$(NC)"; \
-	else \
-		echo "$(RED)Error: .env.local file not found$(NC)"; \
-		exit 1; \
-	fi
-
-db-add-mock-temporal-brooklyn: ## Add mock temporal data for Brooklyn (6 months)
-	@echo "$(BLUE)Adding mock temporal data for Brooklyn...$(NC)"
-	@echo "$(YELLOW)Note: Make sure you've run 'make db-migrate-temporal-tracking' first$(NC)"
-	@if [ -f .env.local ]; then \
-		node scripts/add-mock-temporal-data-brooklyn.js; \
-		echo "$(GREEN)✓ Mock temporal data for Brooklyn added$(NC)"; \
-		echo "$(BLUE)Refreshing views...$(NC)"; \
-		export $$(grep -v '^#' .env.local | grep -v '^$$' | xargs) && \
-		psql $$DATABASE_URL -c "REFRESH MATERIALIZED VIEW IF EXISTS mv_rank_crossing_speed;" 2>/dev/null || true; \
-		echo "$(GREEN)✓ Views refreshed$(NC)"; \
 	else \
 		echo "$(RED)Error: .env.local file not found$(NC)"; \
 		exit 1; \

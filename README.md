@@ -798,7 +798,7 @@ The feature was implemented with the following components:
    - Fall back to city coordinates if video coordinates are unavailable
    - Show video information on hover
 
-5. **Mock Data Generation**: Created `scripts/add-mock-video-coordinates.js` to generate test coordinates within a small radius of each city center.
+5. **Mock Data Generation**: The mock-coordinate script was removed (2026-10-10): real localized positions come from `summary_data/all_video_locations.csv` via `npm run db:publish`.
 
 #### Usage for Future Engineers
 
@@ -809,9 +809,9 @@ The feature was implemented with the following components:
    make db-migrate-video-coordinates
    ```
 
-2. Add coordinates to videos (either real or mock data):
+2. Import the localized video coordinates:
    ```bash
-   make db-add-mock-video-coordinates
+   npm run import-video-coordinates
    ```
 
 3. Or manually update video coordinates in the database:
