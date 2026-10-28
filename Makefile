@@ -1,3 +1,4 @@
+PEDX_CSV_DIR ?= summary_data
 # PEDX Visualizer Makefile
 # Comprehensive build and deployment automation
 
@@ -174,20 +175,8 @@ test-vehicle-api: ## Test vehicle API query for Ho Chi Minh City
 		exit 1; \
 	fi
 
-db-aggregate: ## Aggregate CSV data into database
-	@echo "$(BLUE)Aggregating CSV data into database...$(NC)"
-	@if [ ! -d "summary_data" ]; then \
-		echo "$(RED)Error: summary_data directory not found$(NC)"; \
-		exit 1; \
-	fi
-	@if [ -f .env ]; then \
-		export $$(grep -v '^#' .env | grep -v '^$$' | xargs) && \
-		node scripts/aggregate-csv-data.js; \
-		echo "$(GREEN)✓ Data aggregation complete$(NC)"; \
-	else \
-		echo "$(RED)Error: .env file not found. Run 'make setup' first$(NC)"; \
-		exit 1; \
-	fi
+db-aggregate: ## Validate and atomically activate a prepared dataset release
+	@node scripts/publish-release.js --csv-dir "$(PEDX_CSV_DIR)"
 
 db-refresh-views: ## Refresh materialized views
 	@echo "$(BLUE)Refreshing materialized views...$(NC)"
@@ -233,7 +222,7 @@ db-generate-insights-dry: ## Test insights generation without updating database
 		exit 1; \
 	fi
 
-db-pipeline: db-aggregate db-import-video-coordinates db-refresh-views db-generate-insights ## Complete database update pipeline
+db-pipeline: db-aggregate ## Atomically activate a validated dataset release
 	@echo "$(GREEN)✓ Database pipeline complete (with insights)$(NC)"
 
 db-migrate-localization-fields: ## Add localization provenance columns (street name, confidence, status)
@@ -325,7 +314,7 @@ geonames-test: ## Test GeoNames API connectivity
 # FULL PIPELINE OPERATIONS
 # ===============================================
 
-full-pipeline: setup db-setup db-aggregate db-refresh-views ## Complete setup and data pipeline
+full-pipeline: setup db-setup db-pipeline ## Fresh database setup and validated publication
 	@echo "$(GREEN)🎉 Full pipeline complete!$(NC)"
 	@echo "$(YELLOW)Next steps:$(NC)"
 	@echo "  1. Run 'make dev' to start the development server"
@@ -338,7 +327,7 @@ full-pipeline: setup db-setup db-aggregate db-refresh-views ## Complete setup an
 
 test: ## Run tests
 	@echo "$(BLUE)Running tests...$(NC)"
-	npm test || echo "$(YELLOW)No tests configured$(NC)"
+	npm test
 
 lint: ## Run linter
 	@echo "$(BLUE)Running linter...$(NC)"

@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { pool } from '@/lib/database';
+import { resolveCityId, AmbiguousCityError } from '@/lib/city-identity';
+import { buildCohortQuery } from '@/lib/cohort';
 
 export async function GET(
   request: NextRequest,
@@ -7,10 +9,15 @@ export async function GET(
 ) {
   try {
     const { city } = await params;
+    const cityId = await resolveCityId(city);
+    if (cityId == null) return NextResponse.json({ success: false, error: 'City not found' }, { status: 404 });
+    const search = new URL(request.url).searchParams;
+    search.set('cityId', String(cityId));
+    const cohort = buildCohortQuery(search);
     const limitRaw = parseInt(request.nextUrl.searchParams.get('limit') || '5', 10);
     const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 500) : 5;
 
-    const query = `
+    const query = `${cohort.ctes}
       SELECT 
         v.id,
         v.video_name,
@@ -31,19 +38,22 @@ export async function GET(
         v.run_red_light_ratio,
         v.crosswalk_usage_ratio,
         v.phone_usage_ratio,
-        v.main_weather,
+        v.discovery_run_id, v.sampling_strategy, v.search_order,
+        v.main_weather, v.dataset_release_id, v.analysis_status, v.eligibility_status,
+        v.metric_validity, v.searched_city_id, v.verified_city_id, v.recorded_at, v.analyzed_at,
         c.city,
         c.country,
         c.latitude as city_latitude,
         c.longitude as city_longitude
-      FROM videos v
+      FROM eligible_videos v
       JOIN cities c ON v.city_id = c.id
-      WHERE c.city = $1
+      JOIN observations o ON o.city_id = v.city_id
+      WHERE ${cohort.hasPedestrianFilters ? 'EXISTS (SELECT 1 FROM population matching WHERE matching.video_id = v.id)' : 'TRUE'}
       ORDER BY v.created_at DESC
-      LIMIT $2
+      LIMIT ${limit}
     `;
 
-    const result = await pool.query(query, [city, limit]);
+    const result = await pool.query(query, cohort.values);
     
     // Convert decimal/numeric types to numbers for JSON response
     // Use explicit null checks so a valid 0 coordinate (equator / prime meridian)
@@ -76,8 +86,8 @@ export async function GET(
   } catch (error) {
     console.error('Error fetching city videos:', error);
     return NextResponse.json(
-      { success: false, error: 'Failed to fetch city videos' },
-      { status: 500 }
+      { success: false, error: error instanceof AmbiguousCityError ? error.message : 'Failed to fetch city videos' },
+      { status: error instanceof AmbiguousCityError ? 409 : 503 }
     );
   }
 }

@@ -1,5 +1,6 @@
 'use client';
 
+import { METRICS as SHARED_METRICS } from '@/lib/metrics';
 import { useEffect, useRef, useCallback, useMemo, useState, useSyncExternalStore } from 'react';
 import { useFilter } from '@/contexts/FilterContext';
 import { CityGlobeData, CityVideo } from '@/types/database';
@@ -90,6 +91,7 @@ const MIN_RANKED_CITIES = 5;
 
 // Metric configuration for easy extensibility
 const METRIC_CONFIG: Record<string, MetricConfig> = {
+  coverage: { property: 'total_videos', name: 'Eligible video coverage', unit: 'videos', colorScale: { min: [0.2, 0.5, 0.9, 0.7], max: [0.5, 0.8, 1, 0.9] }, provenance: 'Verified locations and complete analyses; counts describe coverage.' },
   measured_crossing_speed: {
     property: 'avg_measured_crossing_speed',
     name: 'Measured Crossing Speed',
@@ -190,7 +192,7 @@ const METRIC_CONFIG: Record<string, MetricConfig> = {
       min: [0, 1, 0, 0.6], // Green for low rate
       max: [1, 0, 0, 0.8], // Red for high rate
     },
-    sample: { property: 'total_pedestrians', minN: 30, noun: 'pedestrians' },
+    sample: { property: 'run_red_light_sample', minN: 30, noun: 'known observations' },
   },
   crosswalk_usage: {
     property: 'crosswalk_usage_rate',
@@ -200,7 +202,7 @@ const METRIC_CONFIG: Record<string, MetricConfig> = {
       min: [1, 0, 0, 0.6], // Red for low usage
       max: [0, 1, 0, 0.8], // Green for high usage
     },
-    sample: { property: 'total_pedestrians', minN: 30, noun: 'pedestrians' },
+    sample: { property: 'crosswalk_usage_sample', minN: 30, noun: 'known observations' },
   },
   phone_usage: {
     property: 'phone_usage_rate',
@@ -210,7 +212,7 @@ const METRIC_CONFIG: Record<string, MetricConfig> = {
       min: [0, 1, 0, 0.6], // Green for low usage
       max: [1, 0, 0, 0.8], // Red for high usage (dangerous)
     },
-    sample: { property: 'total_pedestrians', minN: 30, noun: 'pedestrians' },
+    sample: { property: 'phone_usage_sample', minN: 30, noun: 'known observations' },
   },
   crossing_speed: {
     property: 'avg_crossing_speed',
@@ -655,223 +657,11 @@ export default function Globe() {
   // carries ALL paintable columns), so switching the selected metric repaints from this
   // cache with zero network; only real filter changes refetch. The AbortController
   // cancels a superseded in-flight request instead of letting it complete server-side.
-  const globalDataCacheRef = useRef<{ key: string; data: CityGlobeData[] } | null>(null);
-  const globalDataAbortRef = useRef<AbortController | null>(null);
 
   // Create a stable reference for vehicle filters to ensure useEffect detects changes
-  // Convert arrays to strings for reliable change detection
-  const vehicleFiltersKey = useMemo(() => 
-    JSON.stringify({
-      car: granularFilters.car,
-      bus: granularFilters.bus,
-      truck: granularFilters.truck,
-      motorbike: granularFilters.motorbike,
-      bicycle: granularFilters.bicycle,
-    }), 
-    [
-      granularFilters.car[0],
-      granularFilters.car[1],
-      granularFilters.bus[0],
-      granularFilters.bus[1],
-      granularFilters.truck[0],
-      granularFilters.truck[1],
-      granularFilters.motorbike[0],
-      granularFilters.motorbike[1],
-      granularFilters.bicycle[0],
-      granularFilters.bicycle[1],
-    ]
-  );
-
-  // Create a stable reference for clothing & accessories filters to ensure useEffect detects changes
-  const clothingFiltersKey = useMemo(() => 
-    JSON.stringify({
-      phoneUse: granularFilters.phoneUse,
-      backpack: granularFilters.backpack,
-      umbrella: granularFilters.umbrella,
-      handbag: granularFilters.handbag,
-      suitcase: granularFilters.suitcase,
-      shirtType: granularFilters.shirtType,
-      bottomWear: granularFilters.bottomWear,
-    }), 
-    [
-      granularFilters.phoneUse,
-      granularFilters.backpack,
-      granularFilters.umbrella,
-      granularFilters.handbag,
-      granularFilters.suitcase,
-      granularFilters.shirtType.join(','),
-      granularFilters.bottomWear.join(','),
-    ]
-  );
-
-  // (City videos now come from FilterContext.cityVideos — one shared, abortable fetch.)
-
-  // Fetch global data for heatmap with filters
-  const fetchGlobalData = useCallback(async (): Promise<CityGlobeData[]> => {
-    try {
-      // Build query parameters from granular filters
-      const params = new URLSearchParams();
-      
-      // Array filters
-      if (granularFilters.continents.length > 0) {
-        params.append('continents', granularFilters.continents.join(','));
-      }
-      
-      if (granularFilters.weather.length > 0) {
-        params.append('weather', granularFilters.weather.join(','));
-      }
-
-      if (granularFilters.gender.length > 0) {
-        params.append('gender', granularFilters.gender.join(','));
-      }
-
-      if (granularFilters.shirtType.length > 0) {
-        params.append('shirtType', granularFilters.shirtType.join(','));
-      }
-
-      if (granularFilters.bottomWear.length > 0) {
-        params.append('bottomWear', granularFilters.bottomWear.join(','));
-      }
-      
-      // Population range (only if not default)
-      if (granularFilters.population[0] > 0) {
-        params.append('minPopulation', granularFilters.population[0].toString());
-      }
-      if (granularFilters.population[1] < 50000000) {
-        params.append('maxPopulation', granularFilters.population[1].toString());
-      }
-      
-      // Age range (only if not default)
-      if (granularFilters.ageRange[0] > 0) {
-        params.append('minAge', granularFilters.ageRange[0].toString());
-      }
-      if (granularFilters.ageRange[1] < 100) {
-        params.append('maxAge', granularFilters.ageRange[1].toString());
-      }
-
-      // Crossing speed range
-      if (granularFilters.crossingSpeed[0] > 0) {
-        params.append('minCrossingSpeed', granularFilters.crossingSpeed[0].toString());
-      }
-      if (granularFilters.crossingSpeed[1] < 5) {
-        params.append('maxCrossingSpeed', granularFilters.crossingSpeed[1].toString());
-      }
-
-      // Road width range
-      if (granularFilters.avgRoadWidth[0] > 0) {
-        params.append('minRoadWidth', granularFilters.avgRoadWidth[0].toString());
-      }
-      if (granularFilters.avgRoadWidth[1] < 50) {
-        params.append('maxRoadWidth', granularFilters.avgRoadWidth[1].toString());
-      }
-
-      // Boolean filters (Pedestrian Behavior)
-      if (granularFilters.riskyCrossing === true) {
-        params.append('riskyCrossing', 'true');
-      }
-      if (granularFilters.runRedLight === true) {
-        params.append('runRedLight', 'true');
-      }
-      if (granularFilters.crosswalkUse === true) {
-        params.append('crosswalkUse', 'true');
-      }
-
-      // Clothing & Accessories
-      if (granularFilters.phoneUse === true) {
-        params.append('phoneUse', 'true');
-      }
-      if (granularFilters.backpack === true) {
-        params.append('backpack', 'true');
-      }
-      if (granularFilters.umbrella === true) {
-        params.append('umbrella', 'true');
-      }
-      if (granularFilters.handbag === true) {
-        params.append('handbag', 'true');
-      }
-      if (granularFilters.suitcase === true) {
-        params.append('suitcase', 'true');
-      }
-
-      // Vehicle count filters — only sent when the user actually narrowed a range.
-      // Sending them unconditionally forced /api/data onto its expensive
-      // cities×videos×pedestrians CTE path on EVERY heatmap repaint, even with all
-      // sliders at their defaults; omitting default ranges lets the API use the cheap
-      // v_city_summary path. Ranges must match DEFAULT ranges in FilterContext.tsx.
-      const vehicleDefaults: Record<string, [number, number]> = {
-        Car: [0, 500],
-        Bus: [0, 100],
-        Truck: [0, 100],
-        Motorbike: [0, 200],
-        Bicycle: [0, 300],
-      };
-      const vehicleValues: Record<string, [number, number]> = {
-        Car: granularFilters.car,
-        Bus: granularFilters.bus,
-        Truck: granularFilters.truck,
-        Motorbike: granularFilters.motorbike,
-        Bicycle: granularFilters.bicycle,
-      };
-      for (const [name, [min, max]] of Object.entries(vehicleValues)) {
-        const [defMin, defMax] = vehicleDefaults[name];
-        if (min !== defMin || max !== defMax) {
-          params.append(`min${name}`, min.toString());
-          params.append(`max${name}`, max.toString());
-        }
-      }
-
-
-      // Add limit parameter to fetch more cities (increased from default 100)
-      params.append('limit', '1000');
-
-      const queryString = params.toString();
-      const url = `/api/data?${queryString}`;
-
-      // Same filter set as the last successful fetch → repaint from cache (this is
-      // every metric switch, since the response carries all paintable columns).
-      if (globalDataCacheRef.current?.key === queryString) {
-        return globalDataCacheRef.current.data;
-      }
-
-      // Cancel a superseded in-flight request before starting the new one.
-      globalDataAbortRef.current?.abort();
-      const ctrl = new AbortController();
-      globalDataAbortRef.current = ctrl;
-
-      const response = await fetch(url, { signal: ctrl.signal });
-      const result = await response.json();
-      if (result.success) {
-        globalDataCacheRef.current = { key: queryString, data: result.data };
-        return result.data;
-      }
-      return [];
-    } catch (error: any) {
-      if (error?.name !== 'AbortError') {
-        console.error('Error fetching global data:', error);
-      }
-      return [];
-    }
-  }, [
-    granularFilters,
-    granularFilters.car,
-    granularFilters.bus,
-    granularFilters.truck,
-    granularFilters.motorbike,
-    granularFilters.bicycle,
-    granularFilters.phoneUse,
-    granularFilters.backpack,
-    granularFilters.umbrella,
-    granularFilters.handbag,
-    granularFilters.suitcase,
-    granularFilters.shirtType.length,
-    granularFilters.shirtType[0],
-    granularFilters.shirtType[1],
-    granularFilters.shirtType[2],
-    granularFilters.bottomWear.length,
-    granularFilters.bottomWear[0],
-    granularFilters.bottomWear[1],
-    granularFilters.bottomWear[2],
-  ]);
+  // One cohort request is shared by map, cards and comparisons.
+  const fetchGlobalData = useCallback(async (): Promise<CityGlobeData[]> => cityData, [cityData]);
+  const [mapLoading, setMapLoading] = useState(false);
 
   // Get color for metric value
   const getColorForMetric = useCallback((
@@ -935,9 +725,14 @@ export default function Globe() {
     Cesium: typeof import('cesium'),
     onCityClick?: (cityName: string) => void
   ) => {
-    if (!viewerRef.current || !data.length) return;
-
+    if (!viewerRef.current) return;
     const viewer = viewerRef.current;
+    if (!data.length || SHARED_METRICS[metricType]?.referenceOnly) {
+      dataSourceRef.current?.entities.removeAll();
+      viewer.scene.requestRender();
+      setScaleInfo({ metric: metricType, ranked: 0, total: 0, min: NaN, max: NaN, established: false });
+      return;
+    }
     
     // Reuse the existing datasource and update entities IN PLACE. Tearing down and
     // recreating ~600 entities (each with fresh canvases + GPU texture uploads) on every
@@ -1106,7 +901,7 @@ export default function Globe() {
       const mortality = num(item.traffic_mortality);
       const contextLine = [
         avgAge != null ? `avg age ${avgAge.toFixed(1)}` : null,
-        speed != null ? `crossing speed ${speed.toFixed(2)} m/s` : null,
+        speed != null ? `reference crossing speed ${speed.toFixed(2)} m/s` : null,
       ].filter(Boolean).join(' · ');
       // Evidence line: how much data backs THIS metric for THIS city. Distinct from the
       // "City totals" line below, which is the city's whole corpus — that line used to be
@@ -1198,7 +993,7 @@ export default function Globe() {
           30 // lift slightly above ground to avoid terrain clipping
         ),
         ellipse: {
-          show: ranked,
+          show: ranked && metricType !== 'coverage',
           semiMinorAxis: radiusMeters,
           semiMajorAxis: radiusMeters,
           material: new Cesium.ImageMaterialProperty({
@@ -1236,6 +1031,7 @@ export default function Globe() {
         },
         properties: {
           city: item.city,
+          cityId: item.id,
           country: item.country,
           metricValue: value,
           metricType: metricType,
@@ -1296,8 +1092,8 @@ export default function Globe() {
     // Filter videos that have coordinates (either video-specific or city fallback) BEFORE
     // touching the datasource, so the empty cases share one clear-and-repaint path.
     const videosWithCoords = videos.filter(video => {
-      const lat = video.latitude ?? video.city_latitude;
-      const lng = video.longitude ?? video.city_longitude;
+      const lat = video.localization_status === 'ok' ? video.latitude : video.city_latitude;
+      const lng = video.localization_status === 'ok' ? video.longitude : video.city_longitude;
       const hasCoords = lat !== null && lng !== null && !isNaN(Number(lat)) && !isNaN(Number(lng));
       if (!hasCoords) {
         console.warn('[Globe] Video without coordinates:', video.video_name, { lat, lng, video_lat: video.latitude, video_lng: video.longitude, city_lat: video.city_latitude, city_lng: video.city_longitude });
@@ -1343,8 +1139,8 @@ export default function Globe() {
 
     // Create markers for each video
     videosWithCoords.forEach((video) => {
-      const lat = video.latitude ?? video.city_latitude;
-      const lng = video.longitude ?? video.city_longitude;
+      const lat = video.localization_status === 'ok' ? video.latitude : video.city_latitude;
+      const lng = video.localization_status === 'ok' ? video.longitude : video.city_longitude;
       
       const latNum = typeof lat === 'string' ? parseFloat(lat) : lat;
       const lngNum = typeof lng === 'string' ? parseFloat(lng) : lng;
@@ -1373,6 +1169,7 @@ export default function Globe() {
           text: [
             video.video_name,
             video.link,
+            video.localization_status === 'ok' ? 'Estimated location, with uncertainty' : 'City center only: video location unverified',
             // Real localization provenance, when present (PedX-Insight --mode localize)
             video.street_name ? `📍 ${video.street_name}` : null,
             video.localization_confidence ? `Localization: ${video.localization_confidence} confidence` : null,
@@ -1621,7 +1418,7 @@ export default function Globe() {
     const viewer = viewerRef.current;
     
     // Find city in the existing cityData (same data source as heatmap)
-    const cityInfo = cityData.find(city => city.city === cityName);
+    const cityInfo = cityData.find(city => String(city.id) === cityName);
     if (!cityInfo) {
       console.warn(`City ${cityName} not found in cityData`);
       return;
@@ -1961,54 +1758,24 @@ export default function Globe() {
     };
   }, []);
 
-  // Handle metric selection and filter changes
+  // Remove the old policy's marks before the new cohort or repaint can complete.
   useEffect(() => {
-    if (!viewerRef.current || selectedMetrics.length === 0) {
-      // Clear heatmap if no metrics selected
-      if (dataSourceRef.current && viewerRef.current) {
-        viewerRef.current.dataSources.remove(dataSourceRef.current);
-        dataSourceRef.current = null;
-        hoveredEntityRef.current = null;
-        viewerRef.current.scene.requestRender();
-      }
-      return;
-    }
-
-    // Debounce updates to prevent flickering when filters change rapidly.
-    // `cancelled` gives last-write-wins semantics: if the filters/metric change again while a
-    // fetch is in flight, this run is marked cancelled in cleanup and will not repaint the
-    // globe, so a slow response can't overwrite the view for the newer filter set.
+    if (!viewerReady || !viewerRef.current) return;
+    dataSourceRef.current?.entities.removeAll();
+    hoveredEntityRef.current = null;
+    viewerRef.current.scene.requestRender();
+    setScaleInfo(null);
+    setMapLoading(true);
     let cancelled = false;
-    const timeoutId = setTimeout(async () => {
+    ;(async () => {
       try {
-        const data = await fetchGlobalData();
-        if (cancelled) return;
-        if (data.length === 0) {
-          console.warn('[Globe] No data returned from API - check filters');
-        }
         const Cesium = await loadCesium();
-        if (cancelled) return;
-
-        // Use the first selected metric for heatmap
-        const metricType = selectedMetrics[0];
-        await createHeatmap(data, metricType, Cesium, setSelectedCity);
-      } catch (error) {
-        console.error('[Globe] Error updating heatmap:', error);
-      }
-    }, 300); // 300ms debounce
-
-    return () => {
-      cancelled = true;
-      clearTimeout(timeoutId);
-    };
-  }, [
-    selectedMetrics, 
-    vehicleFiltersKey,
-    clothingFiltersKey,
-    createHeatmap, 
-    fetchGlobalData, 
-    setSelectedCity
-  ]);
+        if (!cancelled) await createHeatmap(cityData, selectedMetrics[0] || 'coverage', Cesium, setSelectedCity);
+      } catch (error) { console.error('Current cohort map unavailable:', error); }
+      finally { if (!cancelled) setMapLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [viewerReady, cityData, selectedMetrics, granularFilters, createHeatmap, setSelectedCity]);
 
   // Zoom to the selected city (video markers are handled by the effect below,
   // driven by the shared FilterContext.cityVideos fetch).
@@ -2192,9 +1959,9 @@ export default function Globe() {
         // Nothing actionable under the cursor: fall back to selecting the city, checked
         // last so a route/marker click is never swallowed by the ellipse beneath it.
         for (const p of picks) {
-          const cityName = prop(p, 'city');
-          if (cityName) {
-            setSelectedCity(cityName);
+          const cityId = prop(p, 'cityId');
+          if (cityId != null) {
+            setSelectedCity(String(cityId));
             return;
           }
         }
@@ -2349,14 +2116,19 @@ export default function Globe() {
       )}
 
       {/* Heatmap Legend - moved to bottom right */}
-      {selectedMetrics.length > 0 && (
+      {(selectedMetrics.length > 0 || cityData.length > 0) && (
         <div className="absolute bottom-4 right-4 bg-black/90 backdrop-blur-sm text-white p-4 rounded-lg text-sm shadow-lg max-w-xs">
           <div className="font-semibold mb-3 text-base">
-            🗺️ {METRIC_CONFIG[selectedMetrics[0] as keyof typeof METRIC_CONFIG]?.name || selectedMetrics[0]}
+            🗺️ {METRIC_CONFIG[selectedMetrics[0] || 'coverage']?.name || selectedMetrics[0]}
           </div>
           {(() => {
-            const cfg = METRIC_CONFIG[selectedMetrics[0]];
+            const cfg = METRIC_CONFIG[selectedMetrics[0] || 'coverage'];
             if (!cfg) return null;
+            if (mapLoading) return <div className="text-xs text-gray-300">Loading the current cohort...</div>;
+            if (!selectedMetrics.length) return <div className="text-xs text-gray-300">{cityData.length} eligible locations. Markers show complete video coverage; select a location to inspect its clips and evidence.</div>;
+            if (SHARED_METRICS[selectedMetrics[0]]?.referenceOnly) {
+              return <div className="text-xs text-gray-300">External-study reference values are available in city details. Observational map layers use measurements from eligible videos.</div>;
+            }
             const rule = cfg.sample;
             const info = scaleInfo && scaleInfo.metric === selectedMetrics[0] ? scaleInfo : null;
             const rgba = (c: Rgba) => `rgba(${Math.round(c[0] * 255)},${Math.round(c[1] * 255)},${Math.round(c[2] * 255)},${c[3]})`;

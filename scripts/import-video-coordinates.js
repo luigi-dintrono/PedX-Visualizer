@@ -18,7 +18,7 @@
  *
  * Rows with status='ok': UPDATE latitude, longitude, localization_confidence,
  * street_name, localization_status (deliberately OVERWRITES mock coords).
- * Other rows: only localization_status is recorded; coordinates stay untouched.
+ * Other rows clear coordinates and their source binding; raw attempts stay in Insight.
  * Run scripts/migrate-add-localization-fields.sql once beforehand.
  */
 
@@ -31,12 +31,13 @@ const fs = require('fs');
 const path = require('path');
 const csv = require('csv-parser');
 const { Pool } = require('pg');
+const { assertStandaloneImportAllowed } = require('./lib/release-guard');
 
 // --- CLI args ---
 const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
 const csvFlagIndex = args.indexOf('--csv');
-const csvPath =
+const defaultCsvPath =
   (csvFlagIndex !== -1 && args[csvFlagIndex + 1]) ||
   process.env.VIDEO_LOCATIONS_CSV ||
   path.join('summary_data', 'all_video_locations.csv');
@@ -53,30 +54,34 @@ function readCSV(filePath) {
 }
 
 function parseCoord(value, min, max) {
-  const n = parseFloat(value);
+  if (value == null || String(value).trim() === '') return null;
+  const n = Number(value);
   if (!Number.isFinite(n) || n < min || n > max) return null;
   return n;
 }
 
-async function importVideoCoordinates() {
-  if (!process.env.DATABASE_URL) {
-    console.error('❌ DATABASE_URL is not set (checked .env.local and .env)');
-    process.exit(1);
-  }
+async function importVideoCoordinates({ db = null, csvPath = defaultCsvPath, dryRun: preview = dryRun } = {}) {
+  const ownsClient = !db;
+  let ownedPool = null;
+  let transactionStarted = false;
+  if (!db && !process.env.DATABASE_URL) throw new Error('DATABASE_URL is not set');
   if (!fs.existsSync(csvPath)) {
-    console.error(`❌ CSV not found: ${csvPath}`);
-    console.error('   Produce it in PedX-Insight with: python get_all_video_locations.py');
-    process.exit(1);
+    throw new Error(`Localization CSV not found: ${csvPath}`);
   }
 
-  const pool = new Pool({
+  if (ownsClient) ownedPool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: (process.env.DATABASE_URL || '').includes('sslmode=require') || process.env.NODE_ENV === 'production'
-        ? { rejectUnauthorized: false } : false, // honor sslmode=require (e.g. Neon) even outside production
+        ? { rejectUnauthorized: process.env.DB_SSL_INSECURE !== '1' } : false, // honor sslmode=require (e.g. Neon) even outside production
   });
 
+  const pool = db || await ownedPool.connect();
   try {
-    console.log(`🔄 Importing real video coordinates from ${csvPath}${dryRun ? ' (DRY RUN)' : ''}\n`);
+    if (ownsClient && !preview) {
+      await pool.query('BEGIN'); transactionStarted = true;
+      await assertStandaloneImportAllowed(pool);
+    }
+    console.log(`🔄 Importing real video coordinates from ${csvPath}${preview ? ' (DRY RUN)' : ''}\n`);
 
     const rows = await readCSV(csvPath);
     console.log(`1. Read ${rows.length} localization rows\n`);
@@ -88,9 +93,12 @@ async function importVideoCoordinates() {
     const samples = [];
 
     console.log('2. Applying updates...');
+    const seenLinks = new Set();
     for (const row of rows) {
       const link = (row.link || '').trim();
       const status = (row.status || '').trim();
+      if (seenLinks.has(link)) throw new Error(`Duplicate localization row: ${link}`);
+      seenLinks.add(link);
       if (!link) {
         skippedBadRows++;
         continue;
@@ -114,10 +122,9 @@ async function importVideoCoordinates() {
         if (rawCandidates) {
           try {
             const parsed = JSON.parse(rawCandidates);
-            if (Array.isArray(parsed) && parsed.length) candidates = JSON.stringify(parsed);
-          } catch {
-            console.log(`   ⚠️  ${link}: candidates JSON unparseable — stored as null`);
-          }
+            if (!Array.isArray(parsed)) throw new Error('Candidates must be an array');
+            if (parsed.length) candidates = JSON.stringify(parsed);
+          } catch (cause) { throw new Error(`Invalid candidates JSON for ${link}`, { cause }); }
         }
 
         // route_latlon is a JSON array of [lat, lon] pairs — the camera's estimated path
@@ -135,17 +142,22 @@ async function importVideoCoordinates() {
                   Math.abs(Number(p[0])) <= 90 && Math.abs(Number(p[1])) <= 180)
                 .map(p => [Number(p[0]), Number(p[1])])
               : [];
+            if (!Array.isArray(parsed) || points.length !== parsed.length) throw new Error('Invalid route coordinates');
             // A polyline needs two points; a single point is already the chosen position.
             if (points.length >= 2) route = JSON.stringify(points);
-          } catch {
-            console.log(`   ⚠️  ${link}: route_latlon JSON unparseable — stored as null`);
-          }
+          } catch (cause) { throw new Error(`Invalid route JSON for ${link}`, { cause }); }
         }
         const routeLenRaw = parseFloat(row.route_length_m);
         const routeLen = Number.isFinite(routeLenRaw) && routeLenRaw >= 0 ? routeLenRaw : null;
         const trajSource = (row.trajectory_source || '').trim() || null;
+        const sourceHash = (row.source_video_sha256 || '').trim().toLowerCase() || null;
+        const analysisRunId = (row.analysis_run_id || '').trim() || null;
+        const originRunId = (row.localization_origin_run_id || '').trim() || null;
+        const localizedAt = (row.localized_at || '').trim() || null;
+        if (sourceHash && !/^[a-f0-9]{64}$/.test(sourceHash)) throw new Error(`Invalid localization source hash for ${link}`);
+        if (localizedAt && !Number.isFinite(Date.parse(localizedAt))) throw new Error(`Invalid localized_at for ${link}`);
 
-        if (dryRun) {
+        if (preview) {
           console.log(`   [dry-run] ${link}: latitude=${lat}, longitude=${lon}, confidence=${confidence}, spread_m=${spreadM}, candidates=${candidates ? JSON.parse(candidates).length : 0}, route=${route ? JSON.parse(route).length : 0} pts, street=${street}`);
           updatedOk++;
           continue;
@@ -158,11 +170,16 @@ async function importVideoCoordinates() {
                localization_route = $9::jsonb,
                localization_route_length_m = $10,
                localization_trajectory_source = $11,
+               localization_source_video_sha256 = $12,
+               localization_analysis_run_id = $13,
+               localization_origin_run_id = $14,
+               localized_at = $15::timestamptz,
                last_updated_at = CURRENT_TIMESTAMP
-           WHERE link = $8
+           WHERE link = $8 AND ($12::text IS NULL OR source_video_sha256 = $12)
+             AND ($13::text IS NULL OR analysis_run_id = $13)
            RETURNING id, video_name`,
           [lat, lon, confidence, street ? street.slice(0, 255) : null, status, spreadM, candidates, link,
-           route, routeLen, trajSource]
+           route, routeLen, trajSource, sourceHash, analysisRunId, originRunId, localizedAt]
         );
         if (result.rows.length > 0) {
           updatedOk++;
@@ -172,14 +189,20 @@ async function importVideoCoordinates() {
           console.log(`   ⚠️  ${link}: no videos row with this link — run the aggregator first`);
         }
       } else {
-        // Non-ok statuses: record provenance only; never touch coordinates.
-        if (dryRun) {
+        // A failed/unbound result clears the old geographic evidence as one unit.
+        if (preview) {
           console.log(`   [dry-run] ${link}: localization_status=${status || 'unknown'} (status only)`);
           statusOnly++;
           continue;
         }
         const result = await pool.query(
-          `UPDATE videos SET localization_status = $1 WHERE link = $2 RETURNING id`,
+          `UPDATE videos SET localization_status = $1, latitude = NULL, longitude = NULL,
+             localization_confidence = NULL, localization_spread_m = NULL, street_name = NULL,
+             localization_candidates = NULL, localization_route = NULL,
+             localization_route_length_m = NULL, localization_trajectory_source = NULL,
+             localization_source_video_sha256 = NULL, localization_analysis_run_id = NULL,
+             localization_origin_run_id = NULL, localized_at = NULL
+           WHERE link = $2 RETURNING id`,
           [status || 'unknown', link]
         );
         if (result.rows.length > 0) statusOnly++;
@@ -200,7 +223,8 @@ async function importVideoCoordinates() {
       console.log('');
     }
 
-    if (!dryRun) {
+    if (linkNotFound || skippedBadRows) throw new Error(`Localization rejected ${linkNotFound + skippedBadRows} rows`);
+    if (!preview) {
       const verify = await pool.query(`
         SELECT
           COUNT(*) FILTER (WHERE localization_status = 'ok') as localized_ok,
@@ -213,13 +237,18 @@ async function importVideoCoordinates() {
                   `${stats.with_coords}/${stats.total} with coordinates\n`);
     }
 
-    console.log(`✅ Import ${dryRun ? 'dry run ' : ''}finished\n`);
+    if (transactionStarted) await pool.query('COMMIT');
+    return { updatedOk, statusOnly };
+
   } catch (error) {
-    console.error('❌ Error importing video coordinates:', error);
-    process.exitCode = 1;
+    if (transactionStarted) await pool.query('ROLLBACK');
+    throw error;
   } finally {
-    await pool.end();
+    if (ownsClient) { pool.release(); await ownedPool.end(); }
   }
 }
 
-importVideoCoordinates();
+if (require.main === module) {
+  importVideoCoordinates().catch(error => { console.error(error); process.exitCode = 1; });
+}
+module.exports = { importVideoCoordinates, parseCoord };

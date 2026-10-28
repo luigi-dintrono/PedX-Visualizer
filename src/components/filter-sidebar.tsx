@@ -37,6 +37,7 @@ import {
 import { Button } from "@/components/ui/button"
 import { Slider } from "@/components/ui/slider"
 import { Switch } from "@/components/ui/switch"
+import { Checkbox } from "@/components/ui/checkbox"
 import {
   Command,
   CommandEmpty,
@@ -88,13 +89,13 @@ const BEHAVIOR_METRICS = [
   {
     value: 'risky_crossing',
     label: 'Risky Crossing Rate',
-    description: 'Pedestrians crossing unsafely',
+    description: 'Crossing classifications with observed signal evidence',
     icon: AlertTriangle,
   },
   {
     value: 'run_red_light',
     label: 'Run Red Light Rate',
-    description: 'Ignoring traffic signals',
+    description: 'Crossings classified against an observed signal phase',
     icon: Zap,
   },
   {
@@ -106,12 +107,12 @@ const BEHAVIOR_METRICS = [
   {
     value: 'phone_usage',
     label: 'Phone Usage Rate',
-    description: 'Distracted by phones',
+    description: 'Detected phone use',
     icon: Smartphone,
   },
   {
     value: 'crossing_speed',
-    label: 'Crossing Speed',
+    label: 'Reference Crossing Speed',
     description: 'Imported city constant — not measured',
     icon: Gauge,
   },
@@ -123,26 +124,26 @@ const BEHAVIOR_METRICS = [
   },
   {
     value: 'crossing_time',
-    label: 'Crossing Time',
-    description: 'Duration of crossing',
+    label: 'Reference Crossing Time',
+    description: 'Imported city reference; not measured from these videos',
     icon: Clock,
   },
   {
     value: 'avg_age',
-    label: 'Average Age',
-    description: 'Demographics of pedestrians',
+    label: 'Estimated Age',
+    description: 'Model-inferred age; excluded when validation fails',
     icon: User,
   },
   {
     value: 'pedestrian_density',
-    label: 'Pedestrian Density',
-    description: 'Crowding effects',
+    label: 'Tracked Pedestrians per Video',
+    description: 'Track count per video; not population density',
     icon: Users,
   },
   {
     value: 'road_width',
-    label: 'Road Width',
-    description: 'Infrastructure impact',
+    label: 'Estimated Road Width',
+    description: 'Estimated from video geometry',
     icon: Move,
   },
 ] as const;
@@ -178,24 +179,11 @@ export function FilterSidebar() {
   // }
 
 
-  // Unique cities with data (>0 videos and pedestrians), memoized: this Set/sort over all
-  // cities used to run on EVERY render (each slider tick), with an O(n²) indexOf debug log.
-  const uniqueCities = useMemo(() => Array.from(
-    new Set(
-      cityData
-        .filter(city => {
-          // Handle both string and number types from database (Neon returns strings, local PG returns numbers)
-          const videos = typeof city.total_videos === 'string'
-            ? parseInt(city.total_videos)
-            : (typeof city.total_videos === 'number' ? city.total_videos : 0);
-          const pedestrians = typeof city.total_pedestrians === 'string'
-            ? parseInt(city.total_pedestrians)
-            : (typeof city.total_pedestrians === 'number' ? city.total_pedestrians : 0);
-          return !isNaN(videos) && videos > 0 && !isNaN(pedestrians) && pedestrians > 0;
-        })
-        .map(city => city.city)
-    )
-  ).sort(), [cityData])
+  // Database IDs keep cities with the same name in different countries distinct.
+  const uniqueCities = useMemo(() => cityData
+    .filter(city => Number(city.total_videos) > 0)
+    .sort((a, b) => `${a.city}, ${a.country}`.localeCompare(`${b.city}, ${b.country}`)), [cityData])
+  const selectedCityLabel = cityData.find(city => String(city.id) === selectedCity)
 
   const handleCitySelect = (cityName: string) => {
     const newSelectedCity = cityName === "all" ? null : cityName
@@ -239,6 +227,19 @@ export function FilterSidebar() {
           <SidebarGroupLabel>Filters</SidebarGroupLabel>
           <SidebarGroupContent>
             <div className="p-4 space-y-6">
+              <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
+                <label htmlFor="include-experimental" className="flex items-start gap-2 text-sm font-medium cursor-pointer">
+                  <Checkbox id="include-experimental" className="mt-0.5"
+                    checked={filters.includeExperimental}
+                    onCheckedChange={checked => updateFilter('includeExperimental', checked === true)} />
+                  Include experimental measurements
+                </label>
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  Default comparisons require verified locations and validated measurements.
+                  Experimental mode adds experimental or unknown measurements from eligible clips.
+                  Invalid measurements remain excluded.
+                </p>
+              </div>
               {/* Search Cities */}
               <div className="space-y-2">
                 <label className="text-sm font-medium flex items-center gap-2">
@@ -256,7 +257,7 @@ export function FilterSidebar() {
                     disabled={loading}
                   >
                     <span className="truncate">
-                      {selectedCity || "All Cities"}
+                      {selectedCityLabel ? `${selectedCityLabel.city}, ${selectedCityLabel.country}` : "All Cities"}
                     </span>
                     <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                   </Button>
@@ -269,7 +270,7 @@ export function FilterSidebar() {
                           className="h-9"
                         />
                         <CommandList className="max-h-[200px] overflow-auto">
-                          <CommandEmpty>No city found.</CommandEmpty>
+                          <CommandEmpty>No eligible location matches this view.</CommandEmpty>
                           <CommandGroup>
                             <CommandItem
                               value="all"
@@ -285,17 +286,18 @@ export function FilterSidebar() {
                             </CommandItem>
                             {uniqueCities.map((city) => (
                               <CommandItem
-                                key={city}
-                                value={city}
-                                onSelect={() => handleCitySelect(city)}
+                                key={city.id}
+                                value={String(city.id)}
+                                keywords={[city.city, city.country]}
+                                onSelect={() => handleCitySelect(String(city.id))}
                                 className="cursor-pointer"
                               >
                                 <Check
                                   className={`mr-2 h-4 w-4 ${
-                                    selectedCity === city ? "opacity-100" : "opacity-0"
+                                    selectedCity === String(city.id) ? "opacity-100" : "opacity-0"
                                   }`}
                                 />
-                                {city}
+                                {city.city}, {city.country}
                               </CommandItem>
                             ))}
                           </CommandGroup>
@@ -363,6 +365,7 @@ export function FilterSidebar() {
                                 <CommandItem
                                   key={metric.value}
                                   value={metric.value}
+                                  disabled={metric.value === 'avg_age'}
                                   onSelect={() => handleBehaviorSelect(metric.value)}
                                   className="cursor-pointer"
                                 >
@@ -523,10 +526,12 @@ export function FilterSidebar() {
                     <div className="space-y-3">
                       <div>
                         <label className="text-xs font-medium text-muted-foreground">Weather</label>
+                        <p className="text-xs text-muted-foreground mt-1">Weather and day/night classifiers failed validation; these filters are unavailable.</p>
                         <div className="flex flex-wrap gap-2 mt-1">
                           {['shine', 'rain', 'cloudy'].map(weather => (
                             <Button
                               key={weather}
+                              disabled
                               variant={filters.weather.includes(weather) ? "default" : "outline"}
                               size="sm"
                               className="text-xs h-6 capitalize"
@@ -546,6 +551,7 @@ export function FilterSidebar() {
                             size="sm"
                             className="text-xs h-6 flex-1"
                             onClick={() => updateFilter('daytime', filters.daytime === true ? null : true)}
+                            disabled
                           >
                             Day
                           </Button>
@@ -554,6 +560,7 @@ export function FilterSidebar() {
                             size="sm"
                             className="text-xs h-6 flex-1"
                             onClick={() => updateFilter('daytime', filters.daytime === false ? null : false)}
+                            disabled
                           >
                             Night
                           </Button>
@@ -741,10 +748,12 @@ export function FilterSidebar() {
                     <div className="space-y-3">
                       <div>
                         <label className="text-xs font-medium text-muted-foreground">Gender</label>
+                        <p className="text-xs text-muted-foreground mt-1">Inferred age and gender lack sufficient validation; demographic filters are unavailable.</p>
                         <div className="flex flex-wrap gap-2 mt-1">
                           {['male', 'female', 'unknown'].map(gender => (
                             <Button
                               key={gender}
+                              disabled
                               variant={filters.gender.includes(gender) ? "default" : "outline"}
                               size="sm"
                               className="text-xs h-6 capitalize"
@@ -761,6 +770,7 @@ export function FilterSidebar() {
                         <div className="px-2">
                           <Slider
                             value={filters.ageRange}
+                            disabled
                             onValueChange={(value) => updateFilter('ageRange', value as [number, number])}
                             min={0}
                             max={100}

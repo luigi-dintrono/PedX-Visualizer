@@ -124,6 +124,9 @@ export interface LocalizationCandidate {
 // A row from /api/cities/[city]/videos — shared by Globe (markers) and InfoSidebar
 // (video list), which consume the SAME fetch via FilterContext.cityVideos.
 export interface CityVideo {
+  discovery_run_id?: string | null;
+  sampling_strategy?: string | null;
+  search_order?: string | null;
   id: number;
   video_name: string;
   link: string;

@@ -2,6 +2,49 @@
 
 A minimal Next.js application with CesiumJS integration for 3D globe visualization and data analysis.
 
+## Validated dataset releases
+
+The interface uses one active dataset release and one shared cohort definition for
+maps, metric cards, comparisons, rankings and generated insights. Rates remain
+fractions in storage/API responses and convert to percentages once for display.
+Each rate counts its own known outcomes; missing observations are never negative flags.
+Imported crossing speed/time are reference data and cannot generate measured rankings.
+
+Default comparisons require completed analysis, verified filming-city evidence and
+validated measurements. Experimental opt-in broadens measurement validity only; it
+does not bypass location verification or admit known-invalid classifiers. Coverage
+and release status explain empty samples. Recording dates and analysis timestamps
+are separate; processing-history charts do not describe behavioral change.
+
+Apply versioned migrations to an existing database before deploying this version:
+
+```bash
+npm run db:migrate
+```
+
+Prepare a fresh release in PedX-Insight with `python -m scripts.build_release --output
+NEW_DIRECTORY`, then validate and activate it from this repository:
+
+```bash
+npm run db:publish -- --csv-dir PATH/TO/RELEASE --validate-only
+npm run db:publish -- --csv-dir PATH/TO/RELEASE
+```
+
+Checksums, headers, row counts and population provenance are verified before database
+access. One transaction replaces pedestrian records, imports coordinates/statistics,
+refreshes views/insights and activates the release. Failure retains the previous active
+dataset. A private validated file snapshot prevents concurrent CSV modifications.
+`make db-pipeline` and `make db-aggregate PEDX_CSV_DIR=PATH/TO/RELEASE` use this publisher.
+Legacy audit exports cannot activate as production releases.
+
+New releases clear previous model intervals. Fit them separately with
+`npm run model:rates -- --dataset-release-id RELEASE_ID`. The UI reports intervals
+unavailable until a fit matches the active release and current denominators.
+
+Run `npm test`, `npm run typecheck`, `npm run lint` and `npm run build`. Tests include
+isolated PostgreSQL execution with PGlite and transaction rollback cases, without a
+production database.
+
 ## Features
 
 - **CesiumJS Integration**: Full-screen 3D globe with static asset optimization
@@ -295,244 +338,19 @@ Cross-dimensional analysis (e.g., gender vs age comparisons).
 
 ## City Insights System
 
-The PedX Visualizer includes an advanced **City Insights** generation system that automatically creates templated, data-driven insights for each city based on statistical analysis and relevance scoring.
+Generated sentences share the same pooled known-flag estimator as the map and
+city cards. Results include their eligible sample size and describe the observed
+clips, not a representative city survey. Reference speed constants, unverified
+locations and invalid classifiers cannot produce observational rankings.
 
-> 📖 **For detailed implementation information, see [INSIGHTS_IMPLEMENTATION.md](./INSIGHTS_IMPLEMENTATION.md)**
+`generate-city-insights.js` replaces each city's insight list so removed data cannot
+leave stale headlines. Publication runs it inside the dataset activation transaction.
+Filtered insights use the same cohort as the visualization.
 
-### Overview
-
-The insights system analyzes city-specific data against global baselines to generate meaningful, contextual insights. Each city receives between 3-10 insights, prioritized by relevance and statistical significance.
-
-### Features
-
-- **12+ Insight Templates**: Covering speed, behavior, demographics, weather, vehicles, and more
-- **Relevance Scoring**: Insights are ranked by statistical significance and importance
-- **Data Confidence Levels**: Each insight includes confidence indicators (high/medium/low)
-- **Threshold-Based Filtering**: Only statistically significant insights are shown
-- **Automatic Generation**: Updates with database refresh pipeline
-- **Frontend Display**: Beautiful UI cards in the Info Sidebar
-
-### Materialized Views
-
-#### mv_city_insights
-Pre-computed city-level data for fast insight generation:
-- **Speed Metrics**: Average crossing speed, rankings, percentiles
-- **Behavioral Metrics**: Risky crossing, red light violations, crosswalk usage
-- **Demographics**: Age distribution, gender ratios, phone usage
-- **Environmental**: Dominant weather, weather variety
-- **Vehicles**: Top vehicle types by city
-- **Continental Rankings**: City's rank within its continent
-
-#### mv_global_insights
-Global baseline data for comparative analysis:
-- **Global Averages**: Crossing speed, risk rates, age, etc.
-- **Global Medians**: Robust central tendency measures
-- **Percentiles**: Q1, Q3 for outlier detection
-- **Totals**: Cities, videos, pedestrians analyzed
-
-### Insight Templates
-
-The system includes 12 templated insights with intelligent relevance logic:
-
-#### 1. Speed Comparison (speed_vs_global)
-Compares city crossing speed to global average.
-- **Show if**: `|delta| >= 10%` AND `video_count >= 3`
-- **Example**: "Barcelona's average crossing speed is 2.1 m/s, 15% faster than the global average of 1.83 m/s"
-
-#### 2. Speed Ranking (speed_ranking)
-Shows city's global rank for crossing speed.
-- **Show if**: `rank <= 5` OR `rank >= total_cities - 5`
-- **Example**: "Barcelona ranks #3 out of 47 cities for crossing speed"
-
-#### 3. Risk Assessment (risk_assessment)
-Highlights risky crossing patterns.
-- **Show if**: `|delta| >= 15%` AND `pedestrian_count >= 50`
-- **Example**: "Barcelona has a 23.5% risky crossing rate, 18% higher than the global average"
-
-#### 4. Weather Dominance (weather_dominance)
-Identifies dominant weather conditions.
-- **Show if**: Weather appears in `>= 40%` of videos OR low weather variety
-- **Example**: "Sunny conditions are most common in Barcelona"
-
-#### 5. Vehicle Composition (top_vehicles)
-Shows most common vehicle types.
-- **Show if**: `video_count >= 2`
-- **Example**: "Most common vehicles in Barcelona: car, motorbike, bus"
-
-#### 6. Age Demographics (age_demographics)
-Compares average pedestrian age to global.
-- **Show if**: `|delta| >= 20%` AND `pedestrian_count >= 30`
-- **Example**: "Average pedestrian age in Barcelona is 32.4 years, 23% lower than the global median"
-
-#### 7. Phone Usage (phone_usage)
-Highlights phone usage while crossing.
-- **Show if**: `usage >= 15%`
-- **Example**: "18.3% of pedestrians in Barcelona use phones while crossing"
-
-#### 8. Crosswalk Usage (crosswalk_usage)
-Analyzes crosswalk usage patterns.
-- **Show if**: `|delta| >= 25%` AND `pedestrian_count >= 40`
-- **Example**: "Barcelona shows 67.8% crosswalk usage, 32% higher than the global average"
-
-#### 9. Continental Leadership (continent_leader)
-Identifies continent leaders.
-- **Show if**: `continent_rank = 1`
-- **Example**: "Barcelona has the fastest crossing speed in Europe"
-
-#### 10. Gender Balance (gender_balance)
-Shows gender distribution patterns.
-- **Show if**: `|delta from 50%| >= 25%`
-- **Example**: "62.3% of pedestrians in Barcelona are male, showing male-dominant crossing patterns"
-
-#### 11. Red Light Violations (red_light_violations)
-Highlights red light running behavior.
-- **Show if**: `rate >= 10%` OR `rank <= 10`
-- **Example**: "Barcelona has a 14.2% red light violation rate, ranking #7 globally"
-
-#### 12. Data Confidence (data_confidence)
-Shows sample size for transparency.
-- **Always shown** (lowest priority)
-- **Example**: "Based on analysis of 8 videos and 342 pedestrians"
-
-### Usage
-
-#### Generating Insights
-
-```bash
-# Generate insights for all cities
-make db-generate-insights
-
-# Generate with detailed logging
-make db-generate-insights-verbose
-
-# Test without updating database
-make db-generate-insights-dry
-
-# Automatic generation as part of pipeline
-make db-pipeline  # Includes aggregation + refresh + insights
-```
-
-#### Refreshing Insights
-
-```bash
-# Refresh views and regenerate insights
-make db-refresh-all
-
-# Or as separate steps
-make db-refresh-views
-make db-generate-insights
-```
-
-#### Standalone Script
-
-```bash
-# Basic usage
-node scripts/generate-city-insights.js
-
-# With verbose logging
-node scripts/generate-city-insights.js --verbose
-
-# Dry run (test without updating)
-node scripts/generate-city-insights.js --dry-run --verbose
-```
-
-### Data Structure
-
-Insights are stored in the `cities` table as JSONB:
-
-```json
-{
-  "insights": [
-    {
-      "id": "47_speed_vs_global",
-      "category": "speed",
-      "text": "Barcelona's average crossing speed is 2.1 m/s, 15% faster than global average",
-      "relevance_score": 0.85,
-      "data_confidence": "high",
-      "metrics": {
-        "city_value": 2.1,
-        "comparison_value": 1.83,
-        "delta_percent": 15.2
-      }
-    }
-  ]
-}
-```
-
-### Frontend Display
-
-Insights are automatically displayed in the **Info Sidebar** when a city is selected:
-
-- **Sorted by Relevance**: Most important insights shown first
-- **Category Badges**: Visual indicators for insight type
-- **Confidence Levels**: Color-coded confidence badges
-- **Responsive Cards**: Beautiful, readable insight cards
-- **Top 6 Display**: Shows the 6 most relevant insights
-
-### Customization
-
-#### Adding New Templates
-
-Edit `/scripts/generate-city-insights.js` and add to `INSIGHT_TEMPLATES`:
-
-```javascript
-{
-  id: 'your_insight_id',
-  category: 'your_category',
-  name: 'Template Name',
-  evaluate: (cityData, globalData) => {
-    // Your logic here
-    if (/* conditions not met */) return null;
-    
-    return {
-      text: "Your templated insight text",
-      relevance_score: 0.7, // 0.0 to 1.0
-      metrics: {
-        city_value: someValue,
-        comparison_value: globalValue,
-        delta_percent: deltaPercent
-      }
-    };
-  }
-}
-```
-
-#### Adjusting Thresholds
-
-Modify the conditions in each template's `evaluate` function:
-- Change minimum sample sizes
-- Adjust delta percentages
-- Modify relevance score calculations
-
-#### Changing Display Count
-
-Edit `/src/components/info-sidebar.tsx`:
-```tsx
-.slice(0, 6)  // Change 6 to your desired number
-```
-
-### Performance
-
-- **Materialized Views**: Pre-computed for fast generation
-- **Batch Processing**: All cities processed in single script run
-- **Minimal Overhead**: JSONB storage is efficient and indexed
-- **On-Demand Updates**: Only regenerate when data changes
-
-### Integration with Pipeline
-
-The insights system is fully integrated into the database pipeline:
-
-1. **CSV Aggregation** → Updates raw data
-2. **View Refresh** → Recomputes mv_city_insights & mv_global_insights
-3. **Insights Generation** → Creates templated insights from views
-4. **Frontend Display** → Automatically shows new insights
-
-Run the complete pipeline:
-```bash
-make db-pipeline
-```
-
-This ensures insights are always based on the latest data.
+Relationship cards read the active release's `dataset_statistics` snapshot. True
+zeroes, original age bands, sample sizes, city counts, confidence intervals and
+FDR q-values are retained. Global relationships are unavailable for filtered cohorts
+until matching statistics exist. Association text does not imply causation.
 
 ## API Endpoints
 
@@ -830,54 +648,16 @@ The feature was implemented with the following components:
 
 For detailed setup instructions, see [VIDEO_COORDINATES_SETUP.md](./VIDEO_COORDINATES_SETUP.md).
 
-### Historical Data Tracking
+### Analysis history and recording dates
 
-The historical data tracking system enables temporal analysis while maintaining cumulative aggregation for general views. This allows you to view data as it existed at specific points in time, compare current vs historical metrics, and track how data changes over multiple import cycles.
+The active release is an immutable snapshot, not a reconstruction of past behavior.
+Temporal charts group explicit analysis timestamps and label results as processing
+history. Filming dates are not inferred from imports, file modification times,
+upload dates or processing timestamps. Unknown recording dates remain missing.
+Preserve `recorded_at` and `recording_date_source` when genuine recording evidence
+is available for future recording-time analyses.
 
-**Implementation**
-
-The feature was implemented with the following components:
-
-1. **Database Schema**: Added temporal tracking columns to the `videos` table (`data_collected_date`, `import_batch_id`, `first_imported_at`, `last_updated_at`) and created `import_batches` and `video_update_history` tables to track data import runs.
-
-2. **Migration Script**: Created `scripts/migrate-add-temporal-tracking.sql` to add temporal columns, create tracking tables, and migrate existing data.
-
-3. **Temporal Functions**: Created `v_city_summary_at_date()` function to query data at specific points in time and `compare_city_data_current_vs_date()` for historical comparisons.
-
-4. **API Updates**: Enhanced `/api/cities` endpoint to support optional `date` parameter for temporal queries and created `/api/cities/compare` endpoint for comparisons.
-
-5. **Aggregation Script**: Updated `scripts/aggregate-csv-data.js` to automatically create import batches and track temporal metadata for each data import.
-
-6. **UI Visualization**: Added temporal data visualization with area charts in a drawer component, accessible by clicking on metric cards in the city view.
-
-**How It Works:**
-
-- **Cumulative by Default**: General views (like `v_city_summary`) aggregate ALL data from all time periods, ensuring no breaking changes to existing functionality.
-
-- **Temporal on Demand**: When a date parameter is provided, the system filters data to show only what existed at that point in time, enabling historical analysis and trend tracking.
-
-- **Import Tracking**: Each data import creates an import batch record, allowing you to track which data came from which import run and when it was added.
-
-- **Video Updates**: When the same video is imported again (same link), the system updates the existing record but preserves `first_imported_at` to maintain historical accuracy.
-
-- **Future Data**: When new data is added in the future (e.g., 6 months from now), the system automatically:
-  - Creates a new import batch for the new data
-  - Tags new videos with the import batch ID and collection date
-  - Updates existing videos while preserving their first import date
-  - Maintains full historical context for temporal queries
-
-**Usage:**
-
-- **View Historical Data**: Click on any metric card (Crossing Speed, Time to Start, Risky Crossing, etc.) in the city view to see an area chart showing trends over the last 6 months.
-
-- **Temporal API Queries**: Use the `date` parameter in API calls to query data at specific points in time:
-  ```bash
-  GET /api/cities?date=2024-01-01
-  ```
-
-- **Comparisons**: Use the comparison endpoint to see how metrics have changed over time:
-  ```bash
-  GET /api/cities/compare?date=2024-01-01&city=Barcelona
-  ```
-
-For detailed implementation information, see [HISTORICAL_DATA_IMPLEMENTATION.md](./HISTORICAL_DATA_IMPLEMENTATION.md).
+City selectors and APIs use database city IDs. External identities preserve country
+and administrative subdivisions; ambiguous name-only lookups return a conflict.
+Comparisons use the same active release, metric policy and cohort parameters as
+all other displays.

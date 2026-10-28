@@ -1,15 +1,18 @@
 "use client"
 
-import { 
-  BarChart3, 
-  TrendingUp, 
-  Clock, 
-  Users, 
-  Activity, 
-  Filter, 
-  Globe, 
-  Cloud, 
-  User, 
+import { filterParams } from '@/lib/filter-params'
+import { displayValue, comparableValue, METRICS } from '@/lib/metrics'
+
+import {
+  BarChart3,
+  TrendingUp,
+  Clock,
+  Users,
+  Activity,
+  Filter,
+  Globe,
+  Cloud,
+  User,
   Car,
   ChevronRight,
   ExternalLink,
@@ -21,7 +24,7 @@ import {
   Gauge,
   LineChart
 } from "lucide-react"
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useMemo } from "react"
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -66,6 +69,7 @@ interface TopInsight {
   city: string;
   country: string;
   continent: string;
+  city_id: number;
   insight_text: string;
   insight_category: string;
   relevance_score: number;
@@ -80,12 +84,14 @@ interface MetricData {
     description: string;
   };
   global: {
-    value: number;
+    value: number | null;
     totalCities: number;
     totalVideos: number;
     totalPedestrians: number;
   };
   cities: Array<{
+    id: number;
+    sampleSize?: number | null;
     rank: number;
     city: string;
     country: string;
@@ -129,6 +135,8 @@ interface TemporalMetricData {
     value: number;
     fullDate: string;
   }>;
+  timelineBasis?: 'analysis' | 'recorded';
+  notice?: string;
   dateRange: {
     start: string;
     end: string;
@@ -138,10 +146,18 @@ interface TemporalMetricData {
 
 export function InfoSidebar() {
   // cityVideos comes from the context's single shared fetch (also used by the Globe's markers)
-  const { filteredCityData, selectedCity, setSelectedCity, cityVideos, selectedMetrics, granularFilters } = useFilter()
+  const { filteredCityData, selectedCity, setSelectedCity, cityVideos, selectedMetrics, granularFilters, loading: cohortLoading, error: cohortError } = useFilter()
+  const cohortQuery = useMemo(() => filterParams(granularFilters, selectedMetrics[0]).toString(), [granularFilters, selectedMetrics])
+  const metricAbortRef = useRef<AbortController | null>(null)
+  const relationshipAbortRef = useRef<AbortController | null>(null)
+  const baselineAbortRef = useRef<AbortController | null>(null)
+  const topAbortRef = useRef<AbortController | null>(null)
+  const temporalAbortRef = useRef<AbortController | null>(null)
+  const [metricError, setMetricError] = useState<string | null>(null)
   const [topInsights, setTopInsights] = useState<TopInsight[]>([])
   const [metricData, setMetricData] = useState<MetricData | null>(null)
   const [metricRelationships, setMetricRelationships] = useState<MetricRelationship[]>([])
+  const [relationshipNotice, setRelationshipNotice] = useState('Statistical evidence is loading.')
   const [loading, setLoading] = useState(false)
   const [metricLoading, setMetricLoading] = useState(false)
   const [temporalData, setTemporalData] = useState<TemporalMetricData | null>(null)
@@ -191,15 +207,18 @@ export function InfoSidebar() {
 
   // Per-city insight texts: served by the details fetch (the bulk /api/cities list no
   // longer carries the heavy insights JSONB); filteredCityData is the legacy fallback.
-  const cityInsights = cityDetails?.insights ?? filteredCityData?.insights ?? null
+  const cityInsights = cityDetails?.insights ?? null
 
   // Fetch global insights once on mount
   useEffect(() => {
     fetchGlobalInsights()
-  }, [])
+  }, [cohortQuery])
 
   // Fetch top insights for Empty mode
   useEffect(() => {
+    temporalAbortRef.current?.abort()
+    setTemporalData(null)
+    setDrawerOpen(false)
     if (!selectedCity && selectedMetrics.length === 0) {
       fetchTopInsights()
       setMetricData(null)
@@ -214,30 +233,38 @@ export function InfoSidebar() {
       setMetricData(null)
       setMetricRelationships([])
     }
-  }, [selectedCity, selectedMetrics])
+  }, [selectedCity, selectedMetrics, cohortQuery])
 
   const fetchGlobalInsights = async () => {
+    baselineAbortRef.current?.abort()
+    const controller = new AbortController()
+    baselineAbortRef.current = controller
+    setGlobalInsights(null)
     try {
-      const response = await fetch('/api/insights/global')
+      const response = await fetch(`/api/insights/global?${cohortQuery}`, { signal: controller.signal })
       const result = await response.json()
       if (result.success) {
-        setGlobalInsights(result.data)
+        if (!controller.signal.aborted) setGlobalInsights(result.data)
       }
     } catch (error) {
-      console.error('Error fetching global insights:', error)
+      if (!controller.signal.aborted) console.error('Error fetching global insights:', error)
     }
   }
 
   const fetchTopInsights = async () => {
+    topAbortRef.current?.abort()
+    const controller = new AbortController()
+    topAbortRef.current = controller
+    setTopInsights([])
     setLoading(true)
     try {
-      const response = await fetch('/api/insights/top?limit=5')
+      const response = await fetch(`/api/insights/top?limit=5&${cohortQuery}`, { signal: controller.signal })
       const result = await response.json()
       if (result.success) {
-        setTopInsights(result.data)
+        if (!controller.signal.aborted) setTopInsights(result.data)
       }
     } catch (error) {
-      console.error('Error fetching top insights:', error)
+      if (!controller.signal.aborted) console.error('Error fetching top insights:', error)
     } finally {
       setLoading(false)
     }
@@ -253,7 +280,7 @@ export function InfoSidebar() {
     setCityDetails(null)
     setCityDetailsLoading(true)
     try {
-      const response = await fetch(`/api/cities/${encodeURIComponent(city)}/details`, { signal: ctrl.signal })
+      const response = await fetch(`/api/cities/${encodeURIComponent(city)}/details?${cohortQuery}`, { signal: ctrl.signal })
       const result = await response.json()
       if (ctrl.signal.aborted) return
       if (result.success && result.data) {
@@ -272,42 +299,54 @@ export function InfoSidebar() {
   }
 
   const fetchMetricData = async (metric: string) => {
+    metricAbortRef.current?.abort()
+    const controller = new AbortController()
+    metricAbortRef.current = controller
+    setMetricData(null)
+    setMetricError(null)
     setMetricLoading(true)
     try {
-      const response = await fetch(`/api/metrics/${metric}`)
+      const response = await fetch(`/api/metrics/${metric}?${cohortQuery}`, { signal: controller.signal })
       const result = await response.json()
+      if (!response.ok || !result.success) throw new Error(result.error || 'Metric evidence unavailable')
       if (result.success) {
-        setMetricData(result.data)
+        if (!controller.signal.aborted) setMetricData(result.data)
       }
     } catch (error) {
-      console.error('Error fetching metric data:', error)
-      setMetricData(null)
+      if (!controller.signal.aborted) { console.error('Error fetching metric data:', error); setMetricData(null); setMetricError('Metric evidence could not be loaded. Check the dataset release and retry.') }
     } finally {
-      setMetricLoading(false)
+      if (!controller.signal.aborted) setMetricLoading(false)
     }
   }
 
   const fetchMetricRelationships = async (metric: string) => {
+    relationshipAbortRef.current?.abort()
+    const controller = new AbortController()
+    relationshipAbortRef.current = controller
+    setMetricRelationships([])
     try {
-      const response = await fetch(`/api/metrics/${metric}/relationships`)
+      const response = await fetch(`/api/metrics/${metric}/relationships?${cohortQuery}`, { signal: controller.signal })
       const result = await response.json()
       if (result.success) {
-        setMetricRelationships(result.data.relationships)
+        if (!controller.signal.aborted) { setMetricRelationships(result.data.relationships); setRelationshipNotice(result.data.notice || '') }
       }
     } catch (error) {
-      console.error('Error fetching metric relationships:', error)
-      setMetricRelationships([])
+      if (!controller.signal.aborted) { console.error('Error fetching metric relationships:', error); setMetricRelationships([]) }
     }
   }
 
   const fetchTemporalData = async (metric: string, city: string) => {
+    temporalAbortRef.current?.abort()
+    const controller = new AbortController()
+    temporalAbortRef.current = controller
+    setTemporalData(null)
     setTemporalLoading(true)
     try {
       // Map metric display names to API keys
       const metricMap: { [key: string]: string } = {
         'Crossing Speed': 'crossing-speed',
         'Measured Walking Speed': 'measured-walking-speed',
-        'Time to Start': 'crossing-time',
+        'Reference Crossing Time': 'crossing-time',
         'Risky Crossing': 'risky-crossing',
         'Red Light Rate': 'red-light',
         'Crosswalk Usage': 'crosswalk-usage'
@@ -315,19 +354,18 @@ export function InfoSidebar() {
 
       const metricKey = metricMap[metric] || metric.toLowerCase().replace(/\s+/g, '-')
       const response = await fetch(
-        `/api/cities/${encodeURIComponent(city)}/metrics/${metricKey}/temporal?months=6`
+        `/api/cities/${encodeURIComponent(city)}/metrics/${metricKey}/temporal?months=6&${cohortQuery}`, { signal: controller.signal }
       )
       const result = await response.json()
       if (result.success) {
-        setTemporalData(result.data)
+        if (!controller.signal.aborted) setTemporalData(result.data)
       } else {
         setTemporalData(null)
       }
     } catch (error) {
-      console.error('Error fetching temporal data:', error)
-      setTemporalData(null)
+      if (!controller.signal.aborted) { console.error('Error fetching temporal data:', error); setTemporalData(null) }
     } finally {
-      setTemporalLoading(false)
+      if (!controller.signal.aborted) setTemporalLoading(false)
     }
   }
 
@@ -336,6 +374,22 @@ export function InfoSidebar() {
     setSelectedMetricForChart(metricName)
     setDrawerOpen(true)
     fetchTemporalData(metricName, selectedCity)
+  }
+
+  const rateValue = (metric: string) => comparableValue(filteredCityData as unknown as Record<string, unknown> | null, metric)
+  const rateDisplay = (metric: string) => {
+    const value = rateValue(metric)
+    return value == null ? 'Insufficient evidence' : `${displayValue(value, '%')}%`
+  }
+  const rateEvidence = (metric: string, denominator: string) => {
+    if (!filteredCityData) return 'No observations'
+    const row = filteredCityData as unknown as Record<string, unknown>
+    const n = Number(row[denominator] || 0)
+    if (n < METRICS[metric].minN) return `n=${n} known observations; at least ${METRICS[metric].minN} are required to display this rate`
+    if (row[`${metric}_lo`] != null && row[`${metric}_hi`] != null) {
+      return `n=${n} known observations; 95% model interval for a new video ${displayValue(row[`${metric}_lo`], '%')}–${displayValue(row[`${metric}_hi`], '%')}%`
+    }
+    return `n=${n} known observations; confidence interval unavailable for this cohort and release`
   }
 
   const formatNumber = (value: string | number | null | undefined, decimals: number = 2): string => {
@@ -361,10 +415,10 @@ export function InfoSidebar() {
     // Normalize values: if city value is < 1 and metricType is rate, it's a ratio (0-1), convert to percentage
     let cityNormalized = cityNum
     const globalNormalized = globalValue
-    
+
     if (metricType === 'rate') {
       // If city value is less than 1, it's likely a ratio, convert to percentage
-      if (cityNum < 1 && cityNum > 0) {
+      if (Number.isFinite(cityNum)) {
         cityNormalized = cityNum * 100
       }
       // Global value is already in percentage form (from API conversion)
@@ -374,7 +428,7 @@ export function InfoSidebar() {
     const delta = ((cityNormalized - globalNormalized) / globalNormalized) * 100
 
     const formatted = `${delta >= 0 ? '+' : ''}${delta.toFixed(1)}%`
-    
+
     // Color will be determined by the calling function based on metric semantics
     const color = 'text-muted-foreground' // Default, will be overridden
 
@@ -420,7 +474,7 @@ export function InfoSidebar() {
     }
 
     const result = calculateDeltaVsGlobal(cityValue, globalValue, metricType)
-    
+
     // Override color based on metric semantics
     if (metricKey === 'risky_crossing_rate' || metricKey === 'run_red_light_rate') {
       // Lower is better - green for negative delta, red for positive
@@ -464,7 +518,7 @@ export function InfoSidebar() {
       'South Africa': '🇿🇦',
       'Germany': '🇩🇪',
       'Romania': '🇷🇴',
-      
+
       // Common variations and aliases
       'USA': '🇺🇸',
       'US': '🇺🇸',
@@ -472,7 +526,7 @@ export function InfoSidebar() {
       'UK': '🇬🇧',
       'United Kingdom': '🇬🇧',
       'Great Britain': '🇬🇧',
-      
+
       // Major countries for future expansion
       'France': '🇫🇷',
       'Spain': '🇪🇸',
@@ -622,12 +676,12 @@ export function InfoSidebar() {
       'Malawi': '🇲🇼',
       'Mozambique': '🇲🇿'
     }
-    
+
     // Try exact match first
     if (countryEmojis[country]) {
       return countryEmojis[country]
     }
-    
+
     // Try case-insensitive match
     const lowerName = country.toLowerCase().trim()
     for (const [key, emoji] of Object.entries(countryEmojis)) {
@@ -635,12 +689,12 @@ export function InfoSidebar() {
         return emoji
       }
     }
-    
+
     // Handle special cases
     if (country === 'Unknown' || !country || country.trim() === '') {
       return '❓' // Question mark for unknown countries
     }
-    
+
     return '🌍' // Default fallback
   }
 
@@ -668,7 +722,8 @@ export function InfoSidebar() {
       return (
         <div className="h-full w-full border-l bg-background flex items-center justify-center">
           <div className="text-center">
-            <div className="text-sm text-muted-foreground">Loading metric data...</div>
+            <div className="text-sm text-muted-foreground">{metricError || 'Loading metric data...'}</div>
+            {metricError && <Button variant="outline" size="sm" className="mt-3" onClick={() => fetchMetricData(selectedMetrics[0])}>Retry</Button>}
           </div>
         </div>
       )
@@ -704,7 +759,7 @@ export function InfoSidebar() {
                 <Activity className="w-6 h-6 text-primary" />
                 <h2 className="text-xl font-bold">{metricData.metric.name}</h2>
               </div>
-              
+
               <p className="text-sm text-muted-foreground">
                 {metricData.metric.description}
               </p>
@@ -745,7 +800,7 @@ export function InfoSidebar() {
                   {metricData.cities.slice(0, 10).map((city) => (
                     <ListItem
                       key={`${city.city}-${city.country}-${city.rank}`}
-                      onClick={() => setSelectedCity(city.city)}
+                      onClick={() => setSelectedCity(String(city.id))}
                     >
                       <div className="flex items-center gap-3 flex-1">
                         <div className="text-lg font-bold text-muted-foreground w-8">
@@ -790,15 +845,16 @@ export function InfoSidebar() {
             </Card>
 
             {/* Relationships */}
-            {metricRelationships.length > 0 && (
+            {(metricRelationships.length > 0 || relationshipNotice) && (
               <Card>
                 <CardHeader>
                   <CardTitle className="text-sm flex items-center gap-2">
                     <BarChart3 className="w-4 h-4" />
-                    Key Relationships
+                    Statistical Evidence
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3">
+                  {relationshipNotice && <p className="text-xs text-muted-foreground">{relationshipNotice}</p>}
                   {metricRelationships.slice(0, 6).map((rel, idx) => (
                     <div key={idx} className="p-3 bg-muted/50 rounded-md border border-border/50">
                       <div className="flex items-start justify-between gap-2 mb-1">
@@ -808,8 +864,8 @@ export function InfoSidebar() {
                           {rel.category === 'Vehicles' && <Car className="w-4 h-4" />}
                           <span className="text-xs font-medium">{rel.factor}</span>
                         </div>
-                        <Badge 
-                          variant={rel.effectSize > 0 ? 'destructive' : 'default'} 
+                        <Badge
+                          variant={rel.effectSize > 0 ? 'destructive' : 'default'}
                           className="text-xs"
                         >
                           {rel.effect}
@@ -832,16 +888,17 @@ export function InfoSidebar() {
               </CardHeader>
               <CardContent className="space-y-2">
                 <ul className="space-y-2 text-sm">
-                  <li className="flex items-start gap-2">
+                  {metricData.cities.length > 0 && <li className="flex items-start gap-2">
                     <span className="text-primary mt-1">•</span>
                     <span>
-                      <strong>{metricData.cities[0]?.city}</strong> is first on the list at {metricData.cities[0]?.value.toFixed(2)} {metricData.metric.unit}, 
+                      <strong>{metricData.cities[0]?.city || 'No eligible city'}</strong> appears first in this descriptive ordering at {metricData.cities[0]?.value.toFixed(2)} {metricData.metric.unit},
                       {metricData.cities[0]?.deltaVsGlobal && metricData.cities[0].deltaVsGlobal > 0 ? ' above' : ' below'} the global average
                       {metricData.cities[0]?.estimate
                         ? ` (95% interval ${metricData.cities[0].estimate.low.toFixed(0)}–${metricData.cities[0].estimate.high.toFixed(0)}${metricData.metric.unit}, from ${metricData.cities[0].estimate.videos ?? '?'} video${metricData.cities[0].estimate.videos === 1 ? '' : 's'}).`
                         : '.'}
                     </span>
-                  </li>
+                  </li>}
+                  {metricData.cities.length === 0 && <li>No city meets this metric&apos;s evidence and sample requirements.</li>}
                   {metricRelationships.length > 0 && (
                     <li className="flex items-start gap-2">
                       <span className="text-primary mt-1">•</span>
@@ -851,8 +908,8 @@ export function InfoSidebar() {
                   <li className="flex items-start gap-2">
                     <span className="text-primary mt-1">•</span>
                     <span>
-                      Data collected from {metricData.global.totalVideos} videos across {metricData.global.totalCities} cities, 
-                      analyzing {metricData.global.totalPedestrians.toLocaleString()} pedestrian crossings.
+                      Data collected from {metricData.global.totalVideos} videos across {metricData.global.totalCities} cities,
+                      including {metricData.global.totalPedestrians.toLocaleString()} tracked pedestrian observations.
                     </span>
                   </li>
                 </ul>
@@ -882,10 +939,10 @@ export function InfoSidebar() {
                     </thead>
                     <tbody className="divide-y">
                       {metricData.cities.map((city) => (
-                        <tr 
+                        <tr
                           key={`${city.city}-${city.country}-${city.rank}`}
                           className="hover:bg-muted/50 cursor-pointer"
-                          onClick={() => setSelectedCity(city.city)}
+                          onClick={() => setSelectedCity(String(city.id))}
                         >
                           <td className="p-2 text-muted-foreground">#{city.rank}</td>
                           <td className="p-2 font-medium">{city.city}</td>
@@ -896,7 +953,7 @@ export function InfoSidebar() {
                           <td className={`p-2 text-right ${
                             city.deltaVsGlobal && city.deltaVsGlobal > 0 ? 'text-red-600' : 'text-green-600'
                           }`}>
-                            {city.deltaVsGlobal !== null 
+                            {city.deltaVsGlobal !== null
                               ? `${city.deltaVsGlobal > 0 ? '+' : ''}${city.deltaVsGlobal.toFixed(1)}%`
                               : 'N/A'}
                           </td>
@@ -914,6 +971,15 @@ export function InfoSidebar() {
     )
   }
 
+  if (selectedCity && !filteredCityData) {
+    return <div className="h-full w-full border-l bg-background p-4">
+      <Card><CardHeader><CardTitle className="text-base">{cohortLoading ? 'Loading this cohort' : 'No matching observations'}</CardTitle></CardHeader>
+        <CardContent className="space-y-3"><p className="text-sm text-muted-foreground">{cohortError || (cohortLoading ? 'Fetching the selected population.' : 'This city has no eligible observations under the current filters and validity policy. Adjust the filters or choose another city.')}</p>
+          {!cohortLoading && <Button variant="outline" onClick={() => setSelectedCity(null)}>Explore matching cities</Button>}
+        </CardContent></Card>
+    </div>
+  }
+
   // Empty Mode (no city selected, no metric selected)
   if (!selectedCity || !filteredCityData) {
     return (
@@ -923,16 +989,16 @@ export function InfoSidebar() {
             {/* Instructions Section */}
             <div className="space-y-4">
               <h2 className="text-lg font-semibold text-foreground">About</h2>
-              
+
               <div className="text-sm text-muted-foreground leading-relaxed space-y-2">
                 <p>
-                  PedX Visualizer analyzes pedestrian crossing behavior from publicly available street videos across the globe. 
-                  Using computer vision, we extract insights about crossing speeds, safety patterns, infrastructure usage, 
-                  and demographic trends to help urban planners and researchers understand pedestrian behavior. Each insight is automatically 
-                  generated from real-world observations, with confidence levels based on sample size.
+                  PedX Visualizer analyzes pedestrian crossing behavior from publicly available street videos across the globe.
+                  Using computer vision, we extract insights about crossing speeds, safety patterns, infrastructure usage,
+                  and demographic trends to help urban planners and researchers understand pedestrian behavior. Each insight is automatically
+                  derived from eligible video observations. Invalid classifiers are excluded; experimental measures require an explicit opt-in. Samples do not establish citywide behavior.
                 </p>
               </div>
-              
+
               <Card>
                 <CardHeader>
                   <CardTitle className="text-sm flex items-center gap-2">
@@ -959,7 +1025,7 @@ export function InfoSidebar() {
                       <span>Apply filters to update the globe visualization</span>
                     </div>
                   </div>
-                  
+
                   <div className="pt-3 border-t">
                     <h4 className="text-sm font-semibold mb-2">Data Sources:</h4>
                     <div className="text-xs text-muted-foreground space-y-1">
@@ -992,7 +1058,7 @@ export function InfoSidebar() {
                     {topInsights.map((insight, index) => (
                       <ListItem
                         key={`${insight.city}-${index}`}
-                        onClick={() => handleInsightClick(insight.city)}
+                        onClick={() => handleInsightClick(String(insight.city_id))}
                       >
                         <div className="flex items-start gap-3 flex-1">
                           <div className="text-2xl">
@@ -1051,7 +1117,7 @@ export function InfoSidebar() {
                 </div>
               </div>
             </div>
-            
+
             <div className="text-sm text-muted-foreground">
               <div>Population: {filteredCityData.population?.toLocaleString() || 'N/A'}</div>
               <div>Location: {formatNumber(filteredCityData.latitude, 4)}, {formatNumber(filteredCityData.longitude, 4)}</div>
@@ -1077,8 +1143,8 @@ export function InfoSidebar() {
           </div>
 
           {/* KPI Strip */}
-          <div className="grid grid-cols-2 gap-3">
-            <Card 
+          <div className="grid grid-cols-1 2xl:grid-cols-2 gap-3">
+            <Card
               className="cursor-pointer hover:bg-muted/50 transition-colors"
               onClick={() => handleMetricCardClick('Crossing Speed')}
             >
@@ -1086,7 +1152,7 @@ export function InfoSidebar() {
                 <div className="flex items-center justify-between mb-1">
                   <div className="flex items-center gap-2">
                     <Gauge className="w-4 h-4 text-blue-600" />
-                    <span className="text-xs font-medium">Crossing Speed</span>
+                    <span className="text-xs font-medium">Reference Crossing Speed</span>
                   </div>
                   <LineChart className="w-4 h-4 text-muted-foreground" />
                 </div>
@@ -1145,13 +1211,13 @@ export function InfoSidebar() {
 
             <Card
               className="cursor-pointer hover:bg-muted/50 transition-colors"
-              onClick={() => handleMetricCardClick('Time to Start')}
+              onClick={() => handleMetricCardClick('Reference Crossing Time')}
             >
               <CardContent className="p-3">
                 <div className="flex items-center justify-between mb-1">
                   <div className="flex items-center gap-2">
                     <Clock className="w-4 h-4 text-purple-600" />
-                    <span className="text-xs font-medium">Time to Start</span>
+                    <span className="text-xs font-medium">Reference Crossing Time</span>
                   </div>
                   <LineChart className="w-4 h-4 text-muted-foreground" />
                 </div>
@@ -1162,7 +1228,7 @@ export function InfoSidebar() {
               </CardContent>
             </Card>
 
-            <Card 
+            <Card
               className="cursor-pointer hover:bg-muted/50 transition-colors"
               onClick={() => handleMetricCardClick('Risky Crossing')}
             >
@@ -1174,14 +1240,15 @@ export function InfoSidebar() {
                   </div>
                   <LineChart className="w-4 h-4 text-muted-foreground" />
                 </div>
-                <div className="text-lg font-bold">{formatNumber(filteredCityData.risky_crossing_rate, 1)}%</div>
-                <div className={`text-xs ${getMetricDelta('risky_crossing_rate', filteredCityData.risky_crossing_rate).color}`}>
-                  {getMetricDelta('risky_crossing_rate', filteredCityData.risky_crossing_rate).formatted} vs global
-                </div>
+                <div className="text-lg font-bold">{rateDisplay('risky_crossing')}</div>
+                <p className="text-xs text-muted-foreground">{rateEvidence('risky_crossing', 'risky_crossing_determined')}</p>
+                {rateValue('risky_crossing') != null && (<div className={`text-xs ${getMetricDelta('risky_crossing_rate', rateValue('risky_crossing')).color}`}>
+                  {getMetricDelta('risky_crossing_rate', rateValue('risky_crossing')).formatted} vs global
+                </div>)}
               </CardContent>
             </Card>
 
-            <Card 
+            <Card
               className="cursor-pointer hover:bg-muted/50 transition-colors"
               onClick={() => handleMetricCardClick('Red Light Rate')}
             >
@@ -1193,15 +1260,16 @@ export function InfoSidebar() {
                   </div>
                   <LineChart className="w-4 h-4 text-muted-foreground" />
                 </div>
-                <div className="text-lg font-bold">{formatNumber(filteredCityData.run_red_light_rate, 1)}%</div>
-                <div className={`text-xs ${getMetricDelta('run_red_light_rate', filteredCityData.run_red_light_rate).color}`}>
-                  {getMetricDelta('run_red_light_rate', filteredCityData.run_red_light_rate).formatted} vs global
-                </div>
+                <div className="text-lg font-bold">{rateDisplay('run_red_light')}</div>
+                <p className="text-xs text-muted-foreground">{rateEvidence('run_red_light', 'run_red_light_sample')}</p>
+                {rateValue('run_red_light') != null && (<div className={`text-xs ${getMetricDelta('run_red_light_rate', rateValue('run_red_light')).color}`}>
+                  {getMetricDelta('run_red_light_rate', rateValue('run_red_light')).formatted} vs global
+                </div>)}
               </CardContent>
             </Card>
 
-            <Card 
-              className="col-span-2 cursor-pointer hover:bg-muted/50 transition-colors"
+            <Card
+              className="2xl:col-span-2 cursor-pointer hover:bg-muted/50 transition-colors"
               onClick={() => handleMetricCardClick('Crosswalk Usage')}
             >
               <CardContent className="p-3">
@@ -1212,10 +1280,11 @@ export function InfoSidebar() {
                   </div>
                   <LineChart className="w-4 h-4 text-muted-foreground" />
                 </div>
-                <div className="text-lg font-bold">{formatNumber(filteredCityData.crosswalk_usage_rate, 1)}%</div>
-                <div className={`text-xs ${getMetricDelta('crosswalk_usage_rate', filteredCityData.crosswalk_usage_rate).color}`}>
-                  {getMetricDelta('crosswalk_usage_rate', filteredCityData.crosswalk_usage_rate).formatted} vs global
-                </div>
+                <div className="text-lg font-bold">{rateDisplay('crosswalk_usage')}</div>
+                <p className="text-xs text-muted-foreground">{rateEvidence('crosswalk_usage', 'crosswalk_usage_sample')}</p>
+                {rateValue('crosswalk_usage') != null && (<div className={`text-xs ${getMetricDelta('crosswalk_usage_rate', rateValue('crosswalk_usage')).color}`}>
+                  {getMetricDelta('crosswalk_usage_rate', rateValue('crosswalk_usage')).formatted} vs global
+                </div>)}
               </CardContent>
             </Card>
           </div>
@@ -1225,12 +1294,13 @@ export function InfoSidebar() {
             <DrawerContent className="max-h-[85vh]">
               <DrawerHeader className="text-center sm:text-center">
                 <DrawerTitle className="text-center">
-                  {selectedMetricForChart && temporalData ? temporalData.metric.name : selectedMetricForChart || 'Metric History'}
+                  {selectedMetricForChart && temporalData ? temporalData.metric.name : selectedMetricForChart || 'Analysis History'}
                 </DrawerTitle>
                 <DrawerDescription className="text-center">
-                  {selectedCity && temporalData 
-                    ? `Historical data for ${selectedCity} over the last ${temporalData.dateRange.months} months`
-                    : 'Loading temporal data...'}
+                  {selectedCity && temporalData
+                    ? `Analysis history for ${filteredCityData?.city || selectedCity} over the last ${temporalData.dateRange.months} months`
+                    : 'Analysis dates; this does not measure changes by filming date.'}
+                  {temporalData?.notice && <span className="block mt-2 text-xs">{temporalData.notice}</span>}
                 </DrawerDescription>
               </DrawerHeader>
               <div className="px-4 pb-4 overflow-y-auto">
@@ -1326,12 +1396,12 @@ export function InfoSidebar() {
                       <div className="flex items-start justify-between gap-2 mb-1">
                         <div className="flex items-center gap-2">
                           {getCategoryIcon(insight.category)}
-                          <Badge 
+                          <Badge
                             variant={
-                              insight.data_confidence === 'high' ? 'default' : 
-                              insight.data_confidence === 'medium' ? 'secondary' : 
+                              insight.data_confidence === 'high' ? 'default' :
+                              insight.data_confidence === 'medium' ? 'secondary' :
                               'outline'
-                            } 
+                            }
                             className="text-xs capitalize"
                           >
                             {insight.category}
@@ -1460,7 +1530,7 @@ export function InfoSidebar() {
                         (cityDetails?.avg_pedestrian_age !== null && cityDetails?.avg_pedestrian_age !== undefined && cityDetails.avg_pedestrian_age > 0)
                           ? formatNumber(cityDetails.avg_pedestrian_age, 1)
                           : (filteredCityData.avg_pedestrian_age && (typeof filteredCityData.avg_pedestrian_age === 'number' ? filteredCityData.avg_pedestrian_age > 0 : parseFloat(String(filteredCityData.avg_pedestrian_age)) > 0)
-                              ? formatNumber(filteredCityData.avg_pedestrian_age, 1) 
+                              ? formatNumber(filteredCityData.avg_pedestrian_age, 1)
                               : 'N/A')
                         } years
                     </div>

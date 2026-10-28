@@ -1,284 +1,37 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { pool } from '@/lib/database';
-
-/**
- * GET /api/cities/[city]/metrics/[metric]/temporal
- * 
- * Fetches temporal data for a specific metric in a city
- * Returns data points over time for visualization
- */
-export async function GET(
-  request: NextRequest,
-  { params }: { params: Promise<{ city: string; metric: string }> }
-) {
+import { resolveCityId, AmbiguousCityError } from '@/lib/city-identity';
+import { buildCohortQuery } from '@/lib/cohort';
+import { METRICS } from '@/lib/metrics';
+export async function GET(request: NextRequest, { params }: { params: Promise<{ city: string; metric: string }> }) {
   try {
-    const { city: cityParam, metric } = await params;
-    const city = decodeURIComponent(cityParam);
-    const { searchParams } = new URL(request.url);
-    const monthsRaw = parseInt(searchParams.get('months') || '6', 10); // Default to 6 months
-    const months = Number.isFinite(monthsRaw) ? Math.min(Math.max(monthsRaw, 1), 60) : 6;
-
-    // Map metric names to database columns
-    const metricMap: { [key: string]: { column: string; unit: string; name: string } } = {
-      'crossing-speed': {
-        column: 'avg_crossing_speed',
-        unit: 'm/s',
-        name: 'Crossing Speed'
-      },
-      // MEASURED walking speed (PedX-Insight dense tracking), not the imported
-      // city constant behind crossing-speed. Sparse: months without measured
-      // videos yield NULL and are skipped, never rendered as 0.
-      'measured-walking-speed': {
-        column: 'avg_measured_walking_speed',
-        unit: 'm/s',
-        name: 'Measured Walking Speed'
-      },
-      'crossing-time': {
-        column: 'avg_crossing_time',
-        unit: 'seconds',
-        name: 'Time to Start'
-      },
-      'risky-crossing': {
-        column: 'risky_crossing_rate',
-        unit: '%',
-        name: 'Risky Crossing Rate'
-      },
-      'red-light': {
-        column: 'run_red_light_rate',
-        unit: '%',
-        name: 'Red Light Rate'
-      },
-      'crosswalk-usage': {
-        column: 'crosswalk_usage_rate',
-        unit: '%',
-        name: 'Crosswalk Usage Rate'
-      }
-    };
-
-    const metricConfig = metricMap[metric];
-    if (!metricConfig) {
-      return NextResponse.json(
-        { success: false, error: `Unknown metric: ${metric}` },
-        { status: 400 }
-      );
-    }
-
-    // Calculate date range
-    const endDate = new Date();
-    const startDate = new Date();
-    startDate.setMonth(startDate.getMonth() - months);
-
-    // Generate monthly date series
-    const dateSeries: Date[] = [];
-    const current = new Date(startDate);
-    while (current <= endDate) {
-      dateSeries.push(new Date(current));
-      current.setMonth(current.getMonth() + 1);
-    }
-
-    // First, get current data to ensure we have at least one point
-    const currentQuery = await pool.query(
-      `SELECT ${metricConfig.column} as value 
-       FROM v_city_summary 
-       WHERE city = $1 
-       LIMIT 1`,
-      [city]
-    );
-
-    let currentValue: number | null = null;
-    if (currentQuery.rows.length > 0 && currentQuery.rows[0].value !== null && currentQuery.rows[0].value !== undefined) {
-      const parsed = parseFloat(currentQuery.rows[0].value);
-      if (!isNaN(parsed)) {
-        currentValue = parsed;
-      }
-    }
-
-    // Query temporal data for each month
-    const dataPoints: Array<{ date: string; value: number | null }> = [];
-    
-    // Get city ID first for direct video queries
-    const cityIdResult = await pool.query('SELECT id FROM cities WHERE city = $1 LIMIT 1', [city]);
-    const cityId = cityIdResult.rows.length > 0 ? cityIdResult.rows[0].id : null;
-
-    if (!cityId) {
-      // If no city found, return empty data
-      return NextResponse.json({
-        success: true,
-        data: {
-          metric: {
-            key: metric,
-            name: metricConfig.name,
-            unit: metricConfig.unit
-          },
-          chartData: [],
-          dateRange: {
-            start: startDate.toISOString().split('T')[0],
-            end: endDate.toISOString().split('T')[0],
-            months
-          }
-        }
-      });
-    }
-
-    // Query videos directly grouped by month for better performance and accuracy
-    // This approach aggregates data for each month based on when videos were collected/imported
-    let monthlyQuery: string;
-    
-    if (metricConfig.column === 'risky_crossing_rate' || 
-        metricConfig.column === 'run_red_light_rate' || 
-        metricConfig.column === 'crosswalk_usage_rate') {
-      // Calculate from pedestrians
-      const pedestrianField = metricConfig.column === 'risky_crossing_rate' ? 'risky_crossing' :
-                             metricConfig.column === 'run_red_light_rate' ? 'run_red_light' :
-                             'crosswalk_use_or_not';
-      
-      monthlyQuery = `
-        WITH monthly_data AS (
-          SELECT 
-            date_trunc('month', COALESCE(v.data_collected_date, v.first_imported_at::DATE, v.created_at::DATE))::DATE as month_date,
-            -- Denominator is the pedestrians whose flag is KNOWN: COUNT(p.id) counted an
-            -- undetermined risky crossing (NULL) as a safe one.
-            COUNT(CASE WHEN p.${pedestrianField} THEN 1 END)::FLOAT / NULLIF(COUNT(p.${pedestrianField}), 0) as metric_value
-          FROM videos v
-          LEFT JOIN pedestrians p ON v.id = p.video_id
-          WHERE v.city_id = $1
-            AND COALESCE(v.data_collected_date, v.first_imported_at::DATE, v.created_at::DATE) >= $2::DATE
-            AND COALESCE(v.data_collected_date, v.first_imported_at::DATE, v.created_at::DATE) <= $3::DATE
-          GROUP BY month_date
-        ),
-        date_series AS (
-          SELECT generate_series(
-            date_trunc('month', $2::DATE)::DATE,
-            date_trunc('month', $3::DATE)::DATE,
-            '1 month'::INTERVAL
-          )::DATE as month_date
-        )
-        SELECT 
-          ds.month_date as date,
-          md.metric_value as value
-        FROM date_series ds
-        LEFT JOIN monthly_data md ON ds.month_date = md.month_date
-        ORDER BY ds.month_date ASC
-      `;
-    } else {
-      // Use video columns directly (crossing_speed, crossing_time,
-      // measured_walking_speed_mps). The measured metric's videos column does
-      // not follow the strip-"avg_" convention, so map it explicitly.
-      const videoColumn =
-        metricConfig.column === 'avg_measured_walking_speed'
-          ? 'measured_walking_speed_mps'
-          : metricConfig.column.replace('avg_', '');
-      monthlyQuery = `
-        WITH monthly_data AS (
-          SELECT 
-            date_trunc('month', COALESCE(v.data_collected_date, v.first_imported_at::DATE, v.created_at::DATE))::DATE as month_date,
-            AVG(v.${videoColumn}) as metric_value
-          FROM videos v
-          WHERE v.city_id = $1
-            AND COALESCE(v.data_collected_date, v.first_imported_at::DATE, v.created_at::DATE) >= $2::DATE
-            AND COALESCE(v.data_collected_date, v.first_imported_at::DATE, v.created_at::DATE) <= $3::DATE
-          GROUP BY month_date
-        ),
-        date_series AS (
-          SELECT generate_series(
-            date_trunc('month', $2::DATE)::DATE,
-            date_trunc('month', $3::DATE)::DATE,
-            '1 month'::INTERVAL
-          )::DATE as month_date
-        )
-        SELECT 
-          ds.month_date as date,
-          md.metric_value as value
-        FROM date_series ds
-        LEFT JOIN monthly_data md ON ds.month_date = md.month_date
-        ORDER BY ds.month_date ASC
-      `;
-    }
-
-    try {
-      const monthlyResult = await pool.query(monthlyQuery, [
-        cityId,
-        startDate.toISOString().split('T')[0],
-        endDate.toISOString().split('T')[0]
-      ]);
-
-      // Process results - only include months with actual data
-      // Also forward-fill to show trends (use last known value for months without data)
-      let lastKnownValue: number | null = null;
-      for (const row of monthlyResult.rows) {
-        const rowDate = new Date(row.date);
-        if (row.value !== null && row.value !== undefined) {
-          const parsed = parseFloat(String(row.value));
-          if (!isNaN(parsed)) {
-            lastKnownValue = parsed;
-            dataPoints.push({
-              date: rowDate.toISOString().split('T')[0],
-              value: parsed
-            });
-          } else if (lastKnownValue !== null) {
-            // Forward-fill with last known value for continuity in the chart
-            dataPoints.push({
-              date: rowDate.toISOString().split('T')[0],
-              value: lastKnownValue
-            });
-          }
-        } else if (lastKnownValue !== null) {
-          // Forward-fill with last known value for continuity
-          dataPoints.push({
-            date: rowDate.toISOString().split('T')[0],
-            value: lastKnownValue
-          });
-        }
-      }
-      
-      console.log(`Temporal data for ${city}: Found ${dataPoints.length} data points`);
-    } catch (error) {
-      console.error('Error querying monthly temporal data:', error);
-      // Fall back to empty array, will use current value below
-    }
-
-    // If no historical data points but we have current data, add it
-    // This ensures we always show at least one data point if current data exists
-    if (dataPoints.length === 0 && currentValue !== null && !isNaN(currentValue)) {
-      dataPoints.push({
-        date: endDate.toISOString().split('T')[0],
-        value: currentValue
-      });
-    }
-
-    const result = { rows: dataPoints };
-
-    // Format data for chart - include 0 values but filter out null
-    const chartData = result.rows
-      .filter(row => row.value !== null && row.value !== undefined)
-      .map(row => ({
-        date: new Date(row.date).toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
-        value: typeof row.value === 'number' ? row.value : parseFloat(String(row.value)) || 0,
-        fullDate: row.date
-      }));
-
-    return NextResponse.json({
-      success: true,
-      data: {
-        metric: {
-          key: metric,
-          name: metricConfig.name,
-          unit: metricConfig.unit
-        },
-        chartData,
-        dateRange: {
-          start: startDate.toISOString().split('T')[0],
-          end: endDate.toISOString().split('T')[0],
-          months
-        }
-      }
-    });
-  } catch (error) {
-    console.error('Error fetching temporal metric data:', error);
-    return NextResponse.json(
-      { success: false, error: 'Failed to fetch temporal metric data' },
-      { status: 500 }
-    );
-  }
+    const { city, metric } = await params;
+    const keys: Record<string, string> = { 'crossing-speed': 'crossing_speed', 'crossing-time': 'crossing_time', 'measured-walking-speed': 'measured_walking_speed', 'measured-crossing-speed': 'measured_crossing_speed', 'risky-crossing': 'risky_crossing', 'red-light': 'run_red_light', 'crosswalk-usage': 'crosswalk_usage' };
+    const key = keys[metric], definition = METRICS[key];
+    if (!definition) return NextResponse.json({ success: false, error: 'Unknown metric' }, { status: 400 });
+    const id = await resolveCityId(city);
+    if (id == null) return NextResponse.json({ success: false, error: 'City not found' }, { status: 404 });
+    const search = new URL(request.url).searchParams;
+    const months = Math.max(1, Math.min(60, Number(search.get('months')) || 6));
+    const end = new Date(), start = new Date(); start.setUTCMonth(start.getUTCMonth() - months);
+    const timelineBasis = search.get('basis') === 'recorded' ? 'recorded' : 'analysis';
+    const notice = timelineBasis === 'analysis' ? 'Grouped by analysis date. Changes reflect which clips were processed, not changes in pedestrian behavior over time.' : 'Grouped only by a sourced recording date. Clips with unknown recording dates are excluded; these are observational samples.';
+    const empty = () => NextResponse.json({ success: true, data: { metric: { key, name: definition.name, unit: definition.unit }, chartData: [], dateRange: { start: start.toISOString(), end: end.toISOString(), months }, timelineBasis, notice: definition.referenceOnly ? 'Imported city constants have no observational time series.' : notice } });
+    if (definition.referenceOnly) return empty();
+    search.set('cityId', String(id)); search.set('metric', key);
+    const cohort = buildCohortQuery(search);
+    const date = timelineBasis === 'recorded' ? 'v.recorded_at' : 'v.analyzed_at';
+    const field = definition.flag || (key === 'measured_walking_speed' ? 'walking_speed_mps' : 'crossing_speed_mps');
+    const expression = definition.flag ? `COUNT(*) FILTER (WHERE p.${field} IS TRUE)::float / NULLIF(COUNT(p.${field}), 0)` : `AVG(p.${field}) FILTER (WHERE p.${field} BETWEEN 0.1 AND 4)`;
+    const n = definition.flag ? `COUNT(p.${field})` : `COUNT(p.${field}) FILTER (WHERE p.${field} BETWEEN 0.1 AND 4)`;
+    const values = [...cohort.values, start.toISOString(), end.toISOString()];
+    const result = await pool.query(`${cohort.ctes} SELECT date_trunc('month', ${date}) AS month, ${expression} AS value, ${n}::int AS n,
+        COUNT(DISTINCT v.id)::int AS videos FROM eligible_videos v JOIN population p ON p.video_id = v.id
+        JOIN observations o ON o.city_id = v.city_id
+        WHERE ${date} BETWEEN $${values.length - 1}::timestamptz AND $${values.length}::timestamptz
+        ${timelineBasis === 'recorded' ? "AND LOWER(NULLIF(TRIM(v.recording_date_source), '')) NOT IN ('unknown', 'unverified', 'unavailable', 'inferred', 'upload_date', 'analysis_date', 'file_mtime', 'download_date', 'import_date')" : ''}
+        GROUP BY month HAVING ${n} >= ${definition.minN} ORDER BY month`, values);
+    const chartData = result.rows.filter(row => row.value != null).map(row => ({ date: new Date(row.month).toLocaleDateString('en-GB', { month: 'short', year: 'numeric', timeZone: 'UTC' }), fullDate: new Date(row.month).toISOString(), value: Number(row.value) * (definition.unit === '%' ? 100 : 1), n: row.n, videos: row.videos }));
+    return NextResponse.json({ success: true, data: { metric: { key, name: definition.name, unit: definition.unit }, chartData, dateRange: { start: start.toISOString(), end: end.toISOString(), months }, timelineBasis, notice } });
+  } catch (error) { console.error(error); return NextResponse.json({ success: false, error: error instanceof AmbiguousCityError ? error.message : 'Analysis history unavailable' }, { status: error instanceof AmbiguousCityError ? 409 : 503 }); }
 }
-

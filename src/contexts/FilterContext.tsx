@@ -2,8 +2,10 @@
 
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { CityGlobeData, CityVideo, MetricInsight } from '@/types/database'
+import { filterParams } from '@/lib/filter-params'
 
 export interface GranularFilters {
+  includeExperimental: boolean
   // City Context
   continents: string[]
   countries: string[]
@@ -70,6 +72,7 @@ interface FilterState {
   // and InfoSidebar (list), which previously each issued their own request.
   cityVideos: CityVideo[]
   loading: boolean
+  error: string | null
 }
 
 interface FilterContextType extends FilterState {
@@ -85,6 +88,7 @@ interface FilterContextType extends FilterState {
 const FilterContext = createContext<FilterContextType | undefined>(undefined)
 
 const DEFAULT_GRANULAR_FILTERS: GranularFilters = {
+  includeExperimental: false,
   continents: [],
   countries: [],
   population: [0, 50000000],
@@ -132,12 +136,18 @@ export function FilterProvider({ children }: { children: React.ReactNode }) {
   const [selectedCity, setSelectedCity] = useState<string | null>(null)
   const [selectedMetrics, setSelectedMetrics] = useState<string[]>([])
   const [granularFilters, setGranularFilters] = useState<GranularFilters>(DEFAULT_GRANULAR_FILTERS)
-  const [cityData, setCityData] = useState<CityGlobeData[]>([])
+  const [cityResult, setCityResult] = useState<{ query: string; rows: CityGlobeData[] }>({ query: '', rows: [] })
   const [metricData, setMetricData] = useState<MetricInsight[]>([])
-  const [filteredCityData, setFilteredCityData] = useState<CityGlobeData | null>(null)
-  const [filteredMetricData, setFilteredMetricData] = useState<MetricInsight | null>(null)
-  const [cityVideos, setCityVideos] = useState<CityVideo[]>([])
-  const [loading, setLoading] = useState(false)
+  const filteredMetricData = useMemo(() => metricData.find(metric => metric.metric_type === selectedMetrics[0]) || null, [metricData, selectedMetrics])
+  const [videoResult, setVideoResult] = useState<{ city: string | null; query: string; rows: CityVideo[] }>({ city: null, query: '', rows: [] })
+  const [loadingState, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const cohortQuery = useMemo(() => filterParams(granularFilters, selectedMetrics[0]).toString(), [granularFilters, selectedMetrics])
+  const cityData = useMemo(() => cityResult.query === cohortQuery ? cityResult.rows : [], [cityResult, cohortQuery])
+  const filteredCityData = useMemo(() => cityData.find(city => String(city.id) === selectedCity) || null, [cityData, selectedCity])
+  const loading = loadingState || cityResult.query !== cohortQuery
+  const cityVideos = useMemo(() => videoResult.city === selectedCity && videoResult.query === cohortQuery ? videoResult.rows : [], [videoResult, selectedCity, cohortQuery])
+  const citiesAbortRef = useRef<AbortController | null>(null)
   const cityVideosAbortRef = useRef<AbortController | null>(null)
 
   // One shared, abortable fetch of the selected city's videos. Selecting a new city
@@ -147,7 +157,7 @@ export function FilterProvider({ children }: { children: React.ReactNode }) {
     cityVideosAbortRef.current?.abort()
     // Clear immediately on EVERY change so the previous city's videos never linger in
     // the sidebar/globe while the new city's fetch is in flight.
-    setCityVideos([])
+    setVideoResult({ city: selectedCity, query: cohortQuery, rows: [] })
     if (!selectedCity) {
       return
     }
@@ -156,48 +166,45 @@ export function FilterProvider({ children }: { children: React.ReactNode }) {
     ;(async () => {
       try {
         const response = await fetch(
-          `/api/cities/${encodeURIComponent(selectedCity)}/videos?limit=100`,
+          `/api/cities/${encodeURIComponent(selectedCity)}/videos?limit=100&${cohortQuery}`,
           { signal: ctrl.signal }
         )
         const result = await response.json()
         if (!ctrl.signal.aborted) {
-          setCityVideos(result.success ? result.data : [])
+          setVideoResult({ city: selectedCity, query: cohortQuery, rows: result.success ? result.data : [] })
         }
       } catch (error: any) {
         if (error?.name !== 'AbortError') {
           console.error('Error fetching city videos:', error)
-          setCityVideos([])
+          setVideoResult({ city: selectedCity, query: cohortQuery, rows: [] })
         }
       }
     })()
     return () => ctrl.abort()
-  }, [selectedCity])
+  }, [selectedCity, cohortQuery])
 
   // Stable callbacks so the memoized context value below only changes when actual
   // state changes — otherwise every provider render re-rendered every consumer
   // (FilterSidebar, InfoSidebar, Globe, MainContent) on each slider tick.
   const refreshData = useCallback(async () => {
+    citiesAbortRef.current?.abort()
+    const controller = new AbortController()
+    citiesAbortRef.current = controller
     setLoading(true)
+    setError(null)
+    setCityResult({ query: cohortQuery, rows: [] })
     try {
-      // Fetch cities data - request all cities (no limit or high limit)
-      const citiesResponse = await fetch('/api/cities?limit=10000')
-      const citiesResult = await citiesResponse.json()
-      if (citiesResult.success) {
-        setCityData(citiesResult.data)
-      }
-
-      // Fetch metrics data
-      const metricsResponse = await fetch('/api/insights/metrics')
-      const metricsResult = await metricsResponse.json()
-      if (metricsResult.success) {
-        setMetricData(metricsResult.data)
-      }
-    } catch (error) {
-      console.error('Error fetching data:', error)
+      const response = await fetch(`/api/cities?${cohortQuery}`, { signal: controller.signal })
+      const result = await response.json()
+      if (!response.ok || !result.success) throw new Error(result.error || 'Dataset unavailable')
+      if (!controller.signal.aborted) setCityResult({ query: cohortQuery, rows: result.data })
+      setMetricData([])
+    } catch (failure) {
+      if (!controller.signal.aborted) setError(failure instanceof Error ? failure.message : 'Dataset unavailable')
     } finally {
-      setLoading(false)
+      if (!controller.signal.aborted) setLoading(false)
     }
-  }, [])
+  }, [cohortQuery])
 
   const updateGranularFilter = useCallback(<K extends keyof GranularFilters>(key: K, value: GranularFilters[K]) => {
     setGranularFilters(prev => ({ ...prev, [key]: value }))
@@ -207,32 +214,11 @@ export function FilterProvider({ children }: { children: React.ReactNode }) {
     setGranularFilters(DEFAULT_GRANULAR_FILTERS)
   }, [])
 
-  const applyFilters = useCallback(() => {
-    // Filter city data
-    if (selectedCity) {
-      const city = cityData.find(c => c.city === selectedCity)
-      setFilteredCityData(city || null)
-    } else {
-      setFilteredCityData(null)
-    }
-
-    // Filter metric data - show the first selected metric if any
-    if (selectedMetrics.length > 0) {
-      const metric = metricData.find(m => m.metric_type === selectedMetrics[0])
-      setFilteredMetricData(metric || null)
-    } else {
-      setFilteredMetricData(null)
-    }
-  }, [selectedCity, selectedMetrics, cityData, metricData])
-
+  const applyFilters = useCallback(() => { refreshData() }, [refreshData])
   useEffect(() => {
     refreshData()
+    return () => citiesAbortRef.current?.abort()
   }, [refreshData])
-
-  // Automatically apply filters when selectedCity or selectedMetrics change
-  useEffect(() => {
-    applyFilters()
-  }, [applyFilters])
 
   const value: FilterContextType = useMemo(() => ({
     selectedCity,
@@ -251,6 +237,7 @@ export function FilterProvider({ children }: { children: React.ReactNode }) {
     resetGranularFilters,
     applyFilters,
     refreshData,
+    error,
   }), [
     selectedCity,
     selectedMetrics,
@@ -265,6 +252,7 @@ export function FilterProvider({ children }: { children: React.ReactNode }) {
     resetGranularFilters,
     applyFilters,
     refreshData,
+    error,
   ])
 
   return <FilterContext.Provider value={value}>{children}</FilterContext.Provider>

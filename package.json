@@ -37,7 +37,9 @@
     "db:migrate": "node-pg-migrate up -m migrations --envPath .env.local",
     "db:migrate:down": "node-pg-migrate down -m migrations --envPath .env.local",
     "db:migrate:create": "node-pg-migrate create -m migrations --migration-file-language sql",
-    "db:publish": "node scripts/aggregate-csv-data.js && node scripts/import-video-coordinates.js && node scripts/run-rate-model.js && node scripts/refresh-views.js && node scripts/generate-city-insights.js && node scripts/refresh-views.js"
+    "db:publish": "node scripts/publish-release.js",
+    "test": "node --test tests/*.test.js",
+    "typecheck": "tsc --noEmit --incremental false"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.16",
@@ -76,6 +78,7 @@
     "vaul": "^1.1.2"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.12",
     "@eslint/eslintrc": "^3.3.6",
     "@types/node": "^26.1.1",
     "@types/pg": "^8.20.0",

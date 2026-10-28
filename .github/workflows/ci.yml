@@ -22,7 +22,8 @@ jobs:
       - run: npm ci
       # `next build` no longer type-checks for us only if ignoreBuildErrors is re-enabled;
       # running tsc first gives a faster, clearer failure than the build does.
-      - run: npx tsc --noEmit
+      - run: npm run typecheck
+      - run: npm test
       # 0 errors required. Warnings (known React-Compiler-rule debt) are printed, not blocking.
       - run: npm run lint
       - run: npm run build
@@ -73,6 +74,12 @@ jobs:
                  WHERE table_name = 'videos'
                    AND column_name IN ('code_version', 'risky_crossing_ratio_legacy')) <> 2 THEN
               RAISE EXCEPTION 'schema.sql is missing videos.code_version / risky_crossing_ratio_legacy';
+            END IF;
+            PERFORM 1 FROM dataset_releases LIMIT 1;
+            PERFORM 1 FROM dataset_statistics LIMIT 1;
+            IF (SELECT count(*) FROM information_schema.columns WHERE table_name = 'videos'
+                AND column_name IN ('dataset_release_id', 'eligible_for_comparison', 'metric_validity')) <> 3 THEN
+              RAISE EXCEPTION 'schema.sql is missing dataset release eligibility columns';
             END IF;
             PERFORM 1 FROM v_city_rate_estimates LIMIT 1;  -- exists and is selectable
           END $$;

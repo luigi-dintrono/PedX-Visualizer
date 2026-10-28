@@ -7,8 +7,18 @@ import { FilterSidebar } from "@/components/filter-sidebar"
 import { InfoSidebar } from "@/components/info-sidebar"
 import { FilterProvider, useFilter } from "@/contexts/FilterContext"
 import Globe from "@/components/Globe";
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { X } from "lucide-react";
+import { DatasetCoverage } from "@/components/dataset-coverage";
+import { CityComparison } from "@/components/city-comparison";
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
+
+const COMPACT_QUERY = '(max-width: 1100px)';
+function subscribeCompact(listener: () => void) {
+  const query = window.matchMedia(COMPACT_QUERY);
+  query.addEventListener('change', listener);
+  return () => query.removeEventListener('change', listener);
+}
 
 function MainContent({ isInfoSidebarOpen, setIsInfoSidebarOpen }: { 
   isInfoSidebarOpen: boolean; 
@@ -18,17 +28,27 @@ function MainContent({ isInfoSidebarOpen, setIsInfoSidebarOpen }: {
     selectedCity, 
     selectedMetrics, 
     granularFilters, 
+    cityData,
     setSelectedCity, 
     setSelectedMetrics,
     updateGranularFilter
   } = useFilter();
+  const compact = useSyncExternalStore(subscribeCompact, () => window.matchMedia(COMPACT_QUERY).matches, () => false);
+  const [mobileInfoOpen, setMobileInfoOpen] = useState(false);
+  const [comparisonOpen, setComparisonOpen] = useState(false);
+  const infoOpen = compact ? mobileInfoOpen : isInfoSidebarOpen;
 
   // Get active filters for badge display
   const getActiveFilterBadges = () => {
     const badges = [];
 
     if (selectedCity) {
-      badges.push({ type: 'city', label: selectedCity, key: 'city' });
+      const city = cityData.find(item => String(item.id) === selectedCity);
+      badges.push({ type: 'city', label: city ? `${city.city}, ${city.country}` : 'Selected location', key: 'city' });
+    }
+
+    if (granularFilters.includeExperimental) {
+      badges.push({ type: 'experimental', label: 'Experimental audit', key: 'experimental' });
     }
 
     if (selectedMetrics.length > 0) {
@@ -175,6 +195,8 @@ function MainContent({ isInfoSidebarOpen, setIsInfoSidebarOpen }: {
   const removeBadge = (badge: any) => {
     if (badge.type === 'city') {
       setSelectedCity(null);
+    } else if (badge.type === 'experimental') {
+      updateGranularFilter('includeExperimental', false);
     } else if (badge.type === 'metric') {
       setSelectedMetrics([]);
     } else if (badge.type === 'continent') {
@@ -238,22 +260,23 @@ function MainContent({ isInfoSidebarOpen, setIsInfoSidebarOpen }: {
   const activeBadges = getActiveFilterBadges();
 
   return (
-    <ResizablePanelGroup direction="horizontal" className="flex-1">
+    <ResizablePanelGroup direction="horizontal" className="flex-1 min-w-0">
       {/* Main Content Area */}
       <ResizablePanel 
-        defaultSize={isInfoSidebarOpen ? 75 : 100} 
-        minSize={50} 
-        className="flex flex-col"
+        id="globe-panel" order={1}
+        defaultSize={!compact && isInfoSidebarOpen ? 62 : 100}
+        minSize={40}
+        className="flex flex-col min-w-0"
       >
-        <SidebarInset className="flex flex-col h-screen">
+        <SidebarInset className="flex flex-col h-dvh min-w-0">
           {/* Top Bar with Sidebar Triggers */}
-          <div className="h-12 border-b flex items-center justify-between px-4 flex-shrink-0">
-            <div className="flex items-center gap-3 flex-1 overflow-hidden">
+          <div className="min-h-12 border-b flex flex-wrap items-center justify-between gap-2 px-3 py-2 flex-shrink-0">
+            <div className="flex items-center gap-2 flex-1 min-w-0 overflow-hidden">
               <SidebarTrigger />
-              <h1 className="text-lg font-semibold whitespace-nowrap">PedX Visualizer</h1>
+              <h1 className="text-base font-semibold whitespace-nowrap">PedX Visualizer</h1>
               
               {/* Active Filter Badges */}
-              <div className="flex items-center gap-2 overflow-x-auto">
+              <div className="hidden sm:flex items-center gap-2 overflow-x-auto">
                 {activeBadges.map((badge) => (
                   <Badge 
                     key={badge.key} 
@@ -267,21 +290,31 @@ function MainContent({ isInfoSidebarOpen, setIsInfoSidebarOpen }: {
                 ))}
               </div>
             </div>
-            <button
-              onClick={() => setIsInfoSidebarOpen(!isInfoSidebarOpen)}
-              className="flex items-center gap-2 px-3 py-1 text-sm text-muted-foreground hover:text-foreground transition-colors"
-            >
-              <span>Info</span>
+            <div className="flex items-center gap-1 shrink-0">
+              <button onClick={() => setComparisonOpen(!comparisonOpen)} aria-expanded={comparisonOpen}
+                className="rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground">
+                Compare
+              </button>
+              <button
+                onClick={() => compact ? setMobileInfoOpen(!mobileInfoOpen) : setIsInfoSidebarOpen(!isInfoSidebarOpen)}
+                aria-expanded={infoOpen} aria-label="Toggle observation details"
+                className="flex items-center gap-1 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+              >
+              <span>Details</span>
               <svg
-                className={`w-4 h-4 transition-transform ${isInfoSidebarOpen ? 'rotate-180' : ''}`}
+                className={`w-4 h-4 transition-transform ${infoOpen ? 'rotate-180' : ''}`}
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
               >
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
               </svg>
-            </button>
+              </button>
+            </div>
           </div>
+
+          <DatasetCoverage />
+          {comparisonOpen && <CityComparison />}
           
           {/* Cesium Globe - Fixed height based on viewport */}
           <div className="relative overflow-hidden flex-1">
@@ -291,13 +324,24 @@ function MainContent({ isInfoSidebarOpen, setIsInfoSidebarOpen }: {
       </ResizablePanel>
 
       {/* Resizable Handle - Only show when sidebar is open */}
-      {isInfoSidebarOpen && <ResizableHandle withHandle />}
+      {!compact && isInfoSidebarOpen && <ResizableHandle withHandle />}
 
       {/* Right Info Sidebar - Collapsible and Resizable */}
-      {isInfoSidebarOpen && (
-        <ResizablePanel defaultSize={25} minSize={20} maxSize={50}>
+      {!compact && isInfoSidebarOpen && (
+        <ResizablePanel id="details-panel" order={2} defaultSize={38} minSize={30} maxSize={60}>
           <InfoSidebar />
         </ResizablePanel>
+      )}
+      {compact && (
+        <Sheet open={mobileInfoOpen} onOpenChange={setMobileInfoOpen}>
+          <SheetContent side="right" className="w-full sm:w-[34rem] sm:max-w-[90vw] gap-0 pt-10">
+            <SheetHeader className="sr-only">
+              <SheetTitle>Observation details</SheetTitle>
+              <SheetDescription>Evidence, videos, and measurement coverage for the selected location.</SheetDescription>
+            </SheetHeader>
+            <div className="flex-1 min-h-0"><InfoSidebar /></div>
+          </SheetContent>
+        </Sheet>
       )}
     </ResizablePanelGroup>
   );
@@ -309,7 +353,7 @@ export default function Home() {
   return (
     <FilterProvider>
       <SidebarProvider>
-        <div className="flex h-screen w-full">
+        <div className="flex h-dvh w-full min-w-0">
           {/* Left Filter Sidebar - Pushes Content */}
           <FilterSidebar />
           

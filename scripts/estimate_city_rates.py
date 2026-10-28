@@ -29,8 +29,9 @@ Outputs (tables created by migrations/*_city-metric-estimates.sql):
     city_metric_estimates  one row per (city, metric): raw rate, n, videos, posterior mean,
                            95% interval, 95% rank interval among cities passing the gate
 
-Each metric is replaced atomically only after a fit passes its convergence checks, so a
-failed or non-converged fit leaves the previous estimates in place rather than half-written.
+Each fit is tagged with an explicitly requested dataset release. Unversioned writes are
+disabled. A fit may publish only while that release remains active; publication clears
+previous-release intervals. Failed fits can retain only estimates from the same release.
 
 Usage: python scripts/estimate_city_rates.py [--metric risky_crossing] [--draws 1000]
                                              [--chains 4] [--seed 20261010] [--dry-run]
@@ -70,6 +71,19 @@ RANK_MIN_N = 30
 MAX_RHAT = 1.01
 MIN_ESS = 400
 PPC_P_RANGE = (0.01, 0.99)
+PUBLISH_LOCK = 1735025711
+
+
+def require_active_release(conn, release_id):
+    """Called before reading and again under the publication lock before writing."""
+    if not release_id:
+        raise ValueError("Unversioned model writes are disabled; supply --dataset-release-id")
+    row = conn.execute(
+        "SELECT dataset_release_id FROM dataset_releases WHERE dataset_release_id = %s AND is_active",
+        (release_id,),
+    ).fetchone()
+    if not row:
+        raise ValueError(f"Dataset release is not active: {release_id}; model results were not written")
 
 
 def database_url() -> str:
@@ -84,7 +98,7 @@ def database_url() -> str:
     sys.exit("DATABASE_URL is not set (checked env, .env.local, .env)")
 
 
-def load_counts(conn, column: str):
+def load_counts(conn, column: str, release_id: str, metric: str):
     """Per-video successes / known observations for one pedestrian flag, plus the
     measurement era that produced them (NULL pipeline_version = the 2025-12 bulk import)."""
     rows = conn.execute(
@@ -95,11 +109,13 @@ def load_counts(conn, column: str):
                count(p.{column})                  AS n
           FROM videos v
           JOIN pedestrians p ON p.video_id = v.id
-         WHERE v.city_id IS NOT NULL
+         WHERE v.city_id IS NOT NULL AND v.dataset_release_id = %s
+           AND v.eligible_for_comparison IS TRUE
+           AND v.metric_validity -> %s ->> 'status' = 'validated'
          GROUP BY v.id, v.city_id, era
         HAVING count(p.{column}) > 0
          ORDER BY v.id
-        """
+        """, (release_id, metric)
     ).fetchall()
     if not rows:
         return np.array([]), np.array([]), np.array([]), np.array([])
@@ -243,10 +259,14 @@ def script_digest() -> str:
 
 
 def run_metric(conn, metric, column, args):
-    city_id, era, k, n = load_counts(conn, column)
+    require_active_release(conn, args.dataset_release_id)
+    city_id, era, k, n = load_counts(conn, column, args.dataset_release_id, metric)
+    # Release the read transaction during expensive fitting; a fresh check under
+    # the same advisory lock as publication prevents publishing a stale fit.
+    conn.commit()
     if len(n) == 0:
         print(f"[{metric}] no observations; skipped")
-        return
+        return False
     cities, city_idx = np.unique(city_id, return_inverse=True)
     eras, era_idx = np.unique(era, return_inverse=True)
     era_weights = np.zeros((len(cities), len(eras)))
@@ -284,10 +304,11 @@ def run_metric(conn, metric, column, args):
           f"sigma_video {sv.mean():.2f} [{np.percentile(sv, 2.5):.2f}, {np.percentile(sv, 97.5):.2f}] | "
           f"max r_hat {rhat:.3f}, min ESS {ess:.0f}, divergences {divergences} -> {'OK' if ok else 'REJECTED'}")
     if args.dry_run:
-        return
+        return True
 
     pct = lambda a, q: float(np.percentile(a, q))  # noqa: E731
     run_row = dict(
+        dataset_release_id=args.dataset_release_id,
         metric=metric, accepted=ok, eras=",".join(map(str, eras)),
         era_effects=",".join(f"{b:.3f}" for b in np.atleast_1d(beta)),
         n_videos=len(n), n_cities=len(cities), n_obs=int(n.sum()),
@@ -299,18 +320,16 @@ def run_metric(conn, metric, column, args):
     )
     insert_run = (f"INSERT INTO metric_model_runs ({', '.join(run_row)}) "
                   f"VALUES ({', '.join(['%s'] * len(run_row))}) RETURNING id")
-    if not ok:
-        # Record the failed fit for diagnosis, but leave the published estimates untouched.
-        conn.execute(insert_run, tuple(run_row.values()))
-        conn.commit()
-        return
-
     with conn.transaction():
+        conn.execute("SELECT pg_advisory_xact_lock(%s)", (PUBLISH_LOCK,))
+        require_active_release(conn, args.dataset_release_id)
         run_id = conn.execute(insert_run, tuple(run_row.values())).fetchone()[0]
+        if not ok:
+            return False
         conn.execute("DELETE FROM city_metric_estimates WHERE metric = %s", (metric,))
         with conn.cursor().copy(
             "COPY city_metric_estimates (city_id, metric, n_obs, n_successes, n_videos, raw_rate, "
-            "est_mean, est_low, est_high, rank_low, rank_high, ranked_cities, model_run_id) FROM STDIN"
+            "est_mean, est_low, est_high, rank_low, rank_high, ranked_cities, model_run_id, dataset_release_id) FROM STDIN"
         ) as cp:
             n_ranked = int(gated.sum())
             for i, c in enumerate(cities):
@@ -319,8 +338,14 @@ def run_metric(conn, metric, column, args):
                     float(k_city[i] / n_city[i]), float(est[i]), float(lo[i]), float(hi[i]),
                     None if np.isnan(r_lo[i]) else int(r_lo[i]),
                     None if np.isnan(r_hi[i]) else int(r_hi[i]),
-                    n_ranked if gated[i] else None, run_id,
+                    n_ranked if gated[i] else None, run_id, args.dataset_release_id,
                 ))
+        conn.execute("""UPDATE dataset_releases SET model_status = CASE WHEN
+            (SELECT COUNT(DISTINCT metric) FROM city_metric_estimates WHERE dataset_release_id = %s) = %s
+            THEN 'available_for_release' ELSE 'partial_for_release' END
+            WHERE dataset_release_id = %s AND is_active""",
+                     (args.dataset_release_id, len(METRICS), args.dataset_release_id))
+    return True
 
 
 def main():
@@ -330,12 +355,18 @@ def main():
     ap.add_argument("--chains", type=int, default=4)
     ap.add_argument("--seed", type=int, default=20261010)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--dataset-release-id", default=os.environ.get("PEDX_DATASET_RELEASE_ID"))
     args = ap.parse_args()
+    if not args.dataset_release_id:
+        ap.error("Unversioned fitting/writes are disabled; supply --dataset-release-id for the active release")
 
     with psycopg.connect(database_url()) as conn:
+        accepted = []
         for metric in args.metric or METRICS:
-            run_metric(conn, metric, METRICS[metric], args)
+            accepted.append(run_metric(conn, metric, METRICS[metric], args))
             conn.commit()
+    if not all(accepted):
+        sys.exit("One or more metrics had no usable observations or failed fit checks; no stale-release estimates were published")
 
 
 if __name__ == "__main__":

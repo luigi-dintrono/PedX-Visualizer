@@ -22,12 +22,14 @@ require('dotenv').config({ path: '.env.local' });
 require('dotenv').config(); // Fallback to .env if .env.local doesn't exist
 
 // Import GeoNames API integration
-const GeoNamesAPI = require('./geonames-api');
+// Network geography enrichment is a separate job, outside publication.
 // Offline city resolver (no network) — the PRIMARY geo backfill, run before GeoNames.
 const { enrichCityRow } = require('./lib/city-gazetteer');
+const { validateCoreRows } = require('./lib/import-contract');
+const { assertStandaloneImportAllowed } = require('./lib/release-guard');
 
 // Configuration
-const CSV_DIR = path.join(__dirname, '..', 'summary_data');
+const CSV_DIR = process.env.PEDX_CSV_DIR || path.join(__dirname, '..', 'summary_data');
 const VERBOSE = process.argv.includes('--verbose');
 const FRESH_START = process.argv.includes('--fresh');
 
@@ -35,7 +37,7 @@ const FRESH_START = process.argv.includes('--fresh');
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: (process.env.DATABASE_URL || '').includes('sslmode=require') || process.env.NODE_ENV === 'production'
-        ? { rejectUnauthorized: false } : false, // honor sslmode=require (e.g. Neon) even outside production
+        ? { rejectUnauthorized: process.env.DB_SSL_INSECURE !== '1' } : false, // honor sslmode=require (e.g. Neon) even outside production
 });
 
 // Helper function for logging
@@ -53,8 +55,8 @@ function safeNumeric(value) {
     if (value === null || value === undefined || value === '') {
         return null;
     }
-    const parsed = parseFloat(value);
-    return isNaN(parsed) ? null : parsed;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
 }
 
 // Helper function to safely parse boolean values.
@@ -81,7 +83,9 @@ function safeBoolean(value) {
     if (Number.isFinite(n)) {
         return n !== 0;
     }
-    return s === 'true' || s === 'yes' || s === 't' || s === 'y';
+    if (['true', 'yes', 't', 'y'].includes(s)) return true;
+    if (['false', 'no', 'f', 'n'].includes(s)) return false;
+    throw new Error(`Invalid boolean token: ${value}`);
 }
 
 // Helper function to safely parse integer values
@@ -89,8 +93,8 @@ function safeInteger(value) {
     if (value === null || value === undefined || value === '') {
         return null;
     }
-    const parsed = parseInt(value);
-    return isNaN(parsed) ? null : parsed;
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
 // Helper function to parse age values (handles both numeric and age group strings like "Age18-60")
@@ -182,7 +186,10 @@ async function readCSV(filePath) {
 
 // Database operations
 class DatabaseAggregator {
-    constructor() {
+    constructor({ db = pool, csvDir = CSV_DIR, releaseManifest = null } = {}) {
+        this.db = db;
+        this.csvDir = csvDir;
+        this.releaseManifest = releaseManifest;
         this.cityCache = new Map(); // Cache for city lookups
         this.videoCache = new Map(); // Cache for video lookups
         this.currentImportBatchId = null;
@@ -192,15 +199,15 @@ class DatabaseAggregator {
         log('Initializing database connection...');
         try {
             // Ensure UTF-8 encoding for the connection
-            await pool.query("SET client_encoding TO 'UTF8'");
-            await pool.query('SELECT 1');
+            await this.db.query("SET client_encoding TO 'UTF8'");
+            await this.db.query('SELECT 1');
             log('Database connection successful');
             
             if (FRESH_START) {
                 log('Fresh start requested - will recreate schema');
                 const schemaPath = path.join(__dirname, '..', 'database', 'schema.sql');
                 const schema = fs.readFileSync(schemaPath, 'utf8');
-                await pool.query(schema);
+                await this.db.query(schema);
                 log('Schema recreated successfully');
             }
         } catch (error) {
@@ -212,7 +219,7 @@ class DatabaseAggregator {
     async startImportBatch(description = null) {
         // Create import batch record
         const batchDescription = description || `Import on ${new Date().toISOString()}`;
-        const result = await pool.query(`
+        const result = await this.db.query(`
             INSERT INTO import_batches (description, import_date)
             VALUES ($1, CURRENT_TIMESTAMP)
             RETURNING id, import_date
@@ -227,7 +234,7 @@ class DatabaseAggregator {
     async finalizeImportBatch() {
         if (this.currentImportBatchId) {
             // Update batch with final counts
-            const result = await pool.query(`
+            const result = await this.db.query(`
                 UPDATE import_batches 
                 SET 
                     record_count = (SELECT COUNT(*) FROM videos WHERE import_batch_id = $1),
@@ -254,11 +261,19 @@ class DatabaseAggregator {
         try {
             // Read CSV files
             const [videoData, timeData, pedestrianData] = await Promise.all([
-                readCSV(path.join(CSV_DIR, 'all_video_info.csv')),
-                readCSV(path.join(CSV_DIR, 'all_time_info.csv')),
-                readCSV(path.join(CSV_DIR, 'all_pedestrian_info.csv'))
+                readCSV(path.join(this.csvDir, 'all_video_info.csv')),
+                readCSV(path.join(this.csvDir, 'all_time_info.csv')),
+                readCSV(path.join(this.csvDir, 'all_pedestrian_info.csv'))
             ]);
             
+            validateCoreRows(videoData, pedestrianData);
+            if (!videoData.length) throw new Error('Refusing an empty video snapshot');
+            if (this.releaseManifest) {
+                // Full release replacement: observations absent from the validated snapshot
+                // cannot silently remain eligible under the newly activated release.
+                await this.db.query('DELETE FROM videos WHERE NOT (link = ANY($1::text[]))', [videoData.map(row => row.link)]);
+            }
+
             // Create time data lookup.
             // Prefer joining by link (YouTube id) — newer all_time_info.csv from
             // PedX-Insight carries it. The old duration_seconds string-equality join is
@@ -288,107 +303,39 @@ class DatabaseAggregator {
     }
 
     async aggregateCities(videoData) {
-        log('Aggregating cities data...');
-        
-        const cityMap = new Map();
-        
-        // Process video data to extract unique cities
         for (const row of videoData) {
-            // Resolve/complete geography OFFLINE before the (city, country) key is built.
-            // enrichCityRow() fills missing country/continent/coordinates from the local
-            // gazetteer (scripts/data/known-cities.json) and canonicalises the city name
-            // (e.g. "NewYork" -> "New York"), so a row with blank or non-canonical geo merges
-            // with the existing city row via ON CONFLICT (city, country) instead of creating an
-            // "Unknown" duplicate. Cities the gazetteer doesn't know keep placeholder values and
-            // are left for the GeoNames API step at the end of aggregate().
-            const enrich = enrichCityRow(row);
-            if (enrich.changed) {
-                const via = enrich.resolution.source === 'all-the-cities' ? 'world' : enrich.matchType;
-                const parts = [];
-                if (enrich.renamed) parts.push(`→ ${row.city}, ${row.country}`);
-                if (enrich.filledFields.length) parts.push(`filled ${enrich.filledFields.join('/')}`);
-                console.log(`🗺️  "${enrich.resolution.input}" resolved offline [${via}]: ${parts.join('; ')}`);
-            }
-            if (!row.country || row.country.trim() === '' || row.country.trim() === 'Unknown') {
-                // Not in the offline gazetteer — keep placeholders so the row still imports; the
-                // GeoNames API step will try to fill it (and it can be added to the gazetteer).
-                console.log(`Adding city ${row.city} with missing location data - GeoNames API will try to fill it later`);
-                row.country = 'Unknown';
-                row.iso3 = row.iso3 || '';
-                row.continent = row.continent && row.continent.trim() ? row.continent : 'Unknown';
-                row.state = row.state || '';
-                row.lat = row.lat || null;
-                row.lon = row.lon || null;
-            }
-
-            const cityKey = `${row.city}_${row.country}`;
-            if (!cityMap.has(cityKey)) {
-                cityMap.set(cityKey, {
-                    city: cleanString(row.city),
-                    state: cleanString(row.state),
-                    country: cleanString(row.country),
-                    iso3: cleanString(row.iso3),
-                    continent: cleanString(row.continent),
-                    latitude: safeNumeric(row.lat),
-                    longitude: safeNumeric(row.lon),
-                    gmp: safeNumeric(row.gmp),
-                    population_city: safeInteger(row.population_city),
-                    population_country: safeInteger(row.population_country),
-                    traffic_mortality: safeNumeric(row.traffic_mortality),
-                    literacy_rate: safeNumeric(row.literacy_rate),
-                    avg_height: safeNumeric(row.avg_height),
-                    med_age: safeNumeric(row.med_age),
-                    gini: safeNumeric(row.gini)
-                });
-            }
+            // Resolution is descriptive context, never proof that the searched city is in the clip.
+            // An explicit producer identity always wins over local name lookup.
+            const explicit = cleanString(row.city_id || row.searched_city_id);
+            if (!explicit) enrichCityRow(row);
+            const token = value => String(value || 'unknown').normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '') || 'unknown';
+            const identity = explicit || `place:${token(row.iso3 || row.country)}:${token(row.admin1_code || row.state)}:${token(row.city)}`;
+            row._cityIdentity = identity;
+            if (this.cityCache.has(identity)) continue;
+            const data = {
+                external_city_id: identity, city: cleanString(row.city), state: cleanString(row.state),
+                country: cleanString(row.country) || 'Unknown', admin1_code: cleanString(row.admin1_code),
+                iso3: cleanString(row.iso3), continent: cleanString(row.continent),
+                latitude: safeNumeric(row.lat), longitude: safeNumeric(row.lon),
+                gmp: safeNumeric(row.gmp), population_city: safeInteger(row.population_city),
+                population_country: safeInteger(row.population_country), traffic_mortality: safeNumeric(row.traffic_mortality),
+                literacy_rate: safeNumeric(row.literacy_rate), avg_height: safeNumeric(row.avg_height),
+                med_age: safeNumeric(row.med_age), gini: safeNumeric(row.gini),
+            };
+            // Adopt a legacy row only when country/admin/name identify one unambiguous row.
+            const legacy = await this.db.query(`SELECT id FROM cities WHERE external_city_id IS NULL
+                AND city = $1 AND country = $2 AND COALESCE(state, '') = COALESCE($3, '')`,
+                [data.city, data.country, data.state]);
+            if (legacy.rows.length === 1) {
+                await this.db.query('UPDATE cities SET external_city_id = $1 WHERE id = $2', [identity, legacy.rows[0].id]);
+            } else if (legacy.rows.length > 1) throw new Error(`Ambiguous legacy city: ${identity}`);
+            const columns = Object.keys(data);
+            const update = columns.filter(column => column !== 'external_city_id').map(column => `${column} = EXCLUDED.${column}`).join(', ');
+            const result = await this.db.query(`INSERT INTO cities (${columns.join(', ')})
+                VALUES (${columns.map((_, i) => `$${i + 1}`).join(', ')})
+                ON CONFLICT (external_city_id) DO UPDATE SET ${update}, updated_at = CURRENT_TIMESTAMP RETURNING id`, Object.values(data));
+            this.cityCache.set(identity, result.rows[0].id);
         }
-
-        // Insert or update cities
-        console.log(`\n🏙️  Inserting ${cityMap.size} cities...`);
-        let cityCount = 0;
-        for (const [cityKey, cityData] of cityMap) {
-            try {
-                cityCount++;
-                console.log(`[${cityCount}/${cityMap.size}] Inserting ${cityData.city}, ${cityData.country}...`);
-                const result = await pool.query(`
-                    INSERT INTO cities (
-                        city, state, country, iso3, continent, latitude, longitude,
-                        gmp, population_city, population_country, traffic_mortality,
-                        literacy_rate, avg_height, med_age, gini
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
-                    ON CONFLICT (city, country) 
-                    DO UPDATE SET
-                        state = EXCLUDED.state,
-                        iso3 = EXCLUDED.iso3,
-                        continent = EXCLUDED.continent,
-                        latitude = EXCLUDED.latitude,
-                        longitude = EXCLUDED.longitude,
-                        gmp = EXCLUDED.gmp,
-                        population_city = EXCLUDED.population_city,
-                        population_country = EXCLUDED.population_country,
-                        traffic_mortality = EXCLUDED.traffic_mortality,
-                        literacy_rate = EXCLUDED.literacy_rate,
-                        avg_height = EXCLUDED.avg_height,
-                        med_age = EXCLUDED.med_age,
-                        gini = EXCLUDED.gini,
-                        updated_at = CURRENT_TIMESTAMP
-                    RETURNING id
-                `, [
-                    cityData.city, cityData.state, cityData.country, cityData.iso3,
-                    cityData.continent, cityData.latitude, cityData.longitude,
-                    cityData.gmp, cityData.population_city, cityData.population_country,
-                    cityData.traffic_mortality, cityData.literacy_rate, cityData.avg_height,
-                    cityData.med_age, cityData.gini
-                ]);
-                
-                this.cityCache.set(cityKey, result.rows[0].id);
-                log(`City processed: ${cityData.city}, ${cityData.country}`);
-            } catch (error) {
-                console.error(`Error processing city ${cityKey}:`, error);
-            }
-        }
-        
-        log(`Processed ${cityMap.size} cities`);
     }
 
     async aggregateVideos(videoData, timeMap) {
@@ -404,12 +351,11 @@ class DatabaseAggregator {
             try {
                 // Must match the key built in aggregateCities() AFTER enrichCityRow() mutated
                 // row.city/row.country in place — both run over the same shared videoData rows.
-                const cityKey = `${row.city}_${row.country}`;
+                const cityKey = row._cityIdentity;
                 const cityId = this.cityCache.get(cityKey);
                 
                 if (!cityId) {
-                    console.warn(`City not found for video ${row.link}: ${cityKey}`);
-                    continue;
+                    throw new Error(`City not found for video ${row.link}: ${cityKey}`);
                 }
 
                 // Parse data_collected_date from CSV if available, otherwise use import date
@@ -505,7 +451,7 @@ class DatabaseAggregator {
                 };
 
                 // Check if video already exists
-                const existing = await pool.query(
+                const existing = await this.db.query(
                     'SELECT id, first_imported_at FROM videos WHERE link = $1',
                     [videoDataValues.link]
                 );
@@ -515,7 +461,7 @@ class DatabaseAggregator {
                     ? existing.rows[0].first_imported_at 
                     : importDate;
 
-                const result = await pool.query(`
+                const result = await this.db.query(`
                     INSERT INTO videos (
                         city_id, link, video_name, city_link, duration_seconds, total_frames,
                         analysis_seconds, total_pedestrians, total_crossed_pedestrians,
@@ -690,7 +636,7 @@ class DatabaseAggregator {
                 // Track update history if video was updated (not first import)
                 if (isUpdate) {
                     try {
-                        await pool.query(`
+                        await this.db.query(`
                             INSERT INTO video_update_history (
                                 video_id, import_batch_id, updated_at,
                                 risky_crossing_ratio, run_red_light_ratio, crosswalk_usage_ratio,
@@ -706,15 +652,55 @@ class DatabaseAggregator {
                             JSON.stringify(videoDataValues)
                         ]);
                     } catch (historyError) {
-                        // Non-critical error, log but continue
-                        log(`Warning: Could not create update history for video ${row.link}:`, historyError);
+                        throw historyError;
                     }
                 }
                 
+                let validity = {};
+                if (row.metric_validity) {
+                    validity = JSON.parse(row.metric_validity);
+                    if (!validity || typeof validity !== 'object' || Array.isArray(validity)) throw new Error('metric_validity must be an object');
+                }
+                const metadata = {
+                    dataset_release_id: this.releaseManifest?.dataset_release_id || null,
+                    analysis_run_id: cleanString(row.analysis_run_id),
+                    source_video_sha256: cleanString(row.source_video_sha256)?.toLowerCase() || null,
+                    analysis_status: cleanString(row.analysis_status) || 'legacy_unverified',
+                    searched_city_id: cleanString(row.searched_city_id || row.city_id),
+                    verified_city_id: cleanString(row.verified_city_id),
+                    eligibility_status: cleanString(row.eligibility_status) || 'unverified',
+                    location_verification_source: cleanString(row.location_verification_source),
+                    discovery_run_id: cleanString(row.discovery_run_id),
+                    sampling_strategy: cleanString(row.sampling_strategy), search_order: cleanString(row.search_order),
+                    discovered_at: cleanString(row.discovered_at), analyzed_at: cleanString(row.analyzed_at),
+                    analyzed_at_source: cleanString(row.analyzed_at_source),
+                    recorded_at: cleanString(row.recorded_at || row.recording_date),
+                    recording_date_source: cleanString(row.recording_date_source),
+                    clip_start_seconds: safeNumeric(row.clip_start_seconds), clip_end_seconds: safeNumeric(row.clip_end_seconds),
+                    eligible_for_comparison: Boolean(this.releaseManifest && safeBoolean(row.eligible_for_comparison)),
+                    metric_validity: JSON.stringify(validity),
+                };
+                for (const column of ['discovered_at', 'analyzed_at', 'recorded_at']) {
+                    if (metadata[column] && !Number.isFinite(Date.parse(metadata[column]))) throw new Error(`Invalid ${column} for ${row.link}`);
+                }
+                const metaColumns = Object.keys(metadata);
+                const sourceParameter = metaColumns.indexOf('source_video_sha256') + 1;
+                const releaseParameter = metaColumns.indexOf('dataset_release_id') + 1;
+                // Coordinates belong to a source snapshot too. A header-only location
+                // artifact must not inherit points from a previous clip/release.
+                const clearLocation = `$${releaseParameter}::text IS NOT NULL OR source_video_sha256 IS DISTINCT FROM $${sourceParameter}::text`;
+                const locationColumns = ['latitude', 'longitude', 'localization_confidence', 'street_name',
+                    'localization_status', 'localization_spread_m', 'localization_candidates', 'localization_route',
+                    'localization_route_length_m', 'localization_trajectory_source', 'localization_source_video_sha256',
+                    'localization_analysis_run_id', 'localization_origin_run_id', 'localized_at'];
+                const assignments = metaColumns.map((column, i) => `${column} = $${i + 1}`);
+                assignments.push(...locationColumns.map(column => `${column} = CASE WHEN ${clearLocation} THEN NULL ELSE ${column} END`));
+                await this.db.query(`UPDATE videos SET ${assignments.join(', ')}
+                    WHERE id = $${metaColumns.length + 1}`, [...Object.values(metadata), result.rows[0].id]);
                 this.videoCache.set(row.link, result.rows[0].id);
                 log(`Video processed: ${row.video_name} (${isUpdate ? 'updated' : 'new'})`);
             } catch (error) {
-                console.error(`Error processing video ${row.link}:`, error);
+                throw new Error(`Video import failed: ${row.link}`, { cause: error });
             }
         }
         
@@ -723,14 +709,17 @@ class DatabaseAggregator {
 
     async aggregatePedestrians(pedestrianData) {
         log('Aggregating pedestrians data...');
+        // Replace the complete partition, including removed tracks and zero-track reruns.
+        // The caller owns the transaction and rolls back every change on any failure.
+        const videoIds = [...this.videoCache.values()];
+        if (videoIds.length) await this.db.query('DELETE FROM pedestrians WHERE video_id = ANY($1::int[])', [videoIds]);
         
         let processed = 0;
         for (const row of pedestrianData) {
             try {
                 const videoId = this.videoCache.get(row.link);
                 if (!videoId) {
-                    console.warn(`Video not found for pedestrian ${row.track_id}: ${row.link}`);
-                    continue;
+                    throw new Error(`Video not found for pedestrian ${row.track_id}: ${row.link}`);
                 }
 
                 const pedestrianData = {
@@ -812,52 +801,19 @@ class DatabaseAggregator {
                     decision_delay_s: safeNumeric(row.decision_delay_s)
                 };
 
-                await pool.query(`
-                    INSERT INTO pedestrians (
-                        video_id, track_id, crossed, nearby_count_beginning, nearby_count_whole,
-                        risky_crossing, run_red_light, crosswalk_use_or_not, gender, age, phone_using,
-                        backpack, umbrella, handbag, suitcase, short_sleeved_shirt, long_sleeved_shirt,
-                        short_sleeved_outwear, long_sleeved_outwear, vest, sling, shorts, trousers, skirt,
-                        short_sleeved_dress, long_sleeved_dress, vest_dress, sling_dress, weather, daytime,
-                        police_car, arrow_board, cones, accident, crack, potholes, avg_vehicle_total,
-                        crossing_sign, avg_road_width, crosswalk, sidewalk, ambulance, army_vehicle,
-                        auto_rickshaw, bicycle, bus, car, garbagevan, human, hauler, minibus, minivan,
-                        motorbike, pickup, policecar, rickshaw, scooter, suv, taxi, three_wheelers_cng,
-                        truck, van, wheelbarrow,
-                        human_hauler, walking_speed_mps, crossing_speed_mps, decision_delay_s
-                    ) VALUES (
-                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
-                        $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38,
-                        $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54, $55, $56,
-                        $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67
-                    )
-                    ON CONFLICT (video_id, track_id)
-                    DO UPDATE SET
-                        crossed = EXCLUDED.crossed,
-                        nearby_count_beginning = EXCLUDED.nearby_count_beginning,
-                        nearby_count_whole = EXCLUDED.nearby_count_whole,
-                        risky_crossing = EXCLUDED.risky_crossing,
-                        run_red_light = EXCLUDED.run_red_light,
-                        crosswalk_use_or_not = EXCLUDED.crosswalk_use_or_not,
-                        gender = EXCLUDED.gender,
-                        age = EXCLUDED.age,
-                        phone_using = EXCLUDED.phone_using,
-                        -- Must be refreshed on conflict too: pedestrian rows imported before
-                        -- these columns existed are already in the table, so an INSERT-only
-                        -- mapping would leave them NULL forever on every re-import.
-                        human_hauler = EXCLUDED.human_hauler,
-                        walking_speed_mps = EXCLUDED.walking_speed_mps,
-                        crossing_speed_mps = EXCLUDED.crossing_speed_mps,
-                        decision_delay_s = EXCLUDED.decision_delay_s,
-                        updated_at = CURRENT_TIMESTAMP
-                `, Object.values(pedestrianData));
+                const columns = Object.keys(pedestrianData);
+                const placeholders = columns.map((_, index) => `$${index + 1}`);
+                await this.db.query(
+                    `INSERT INTO pedestrians (${columns.join(', ')}) VALUES (${placeholders.join(', ')})`,
+                    Object.values(pedestrianData)
+                );
                 
                 processed++;
                 if (processed % 100 === 0) {
                     log(`Processed ${processed} pedestrians...`);
                 }
             } catch (error) {
-                console.error(`Error processing pedestrian ${row.track_id} in video ${row.link}:`, error);
+                throw new Error(`Pedestrian import failed: ${row.link}/${row.track_id}`, { cause: error });
             }
         }
         
@@ -867,6 +823,13 @@ class DatabaseAggregator {
     // Analytics aggregation with improved structure
     async aggregateAnalytics() {
         log('Aggregating analytics data...');
+        const registryPath = path.join(this.csvDir, 'metrics_registry.json');
+        if (this.releaseManifest && fs.existsSync(registryPath)) {
+            const registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+            if (!registry || typeof registry !== 'object' || Array.isArray(registry)) throw new Error('Invalid metric validity registry');
+            await this.db.query('DELETE FROM dataset_statistics WHERE dataset_release_id = $1 AND file_name = $2', [this.releaseManifest.dataset_release_id, 'metrics_registry.json']);
+            await this.db.query('INSERT INTO dataset_statistics(dataset_release_id, file_name, row_number, payload) VALUES ($1, $2, 0, $3::jsonb)', [this.releaseManifest.dataset_release_id, 'metrics_registry.json', JSON.stringify(registry)]);
+        }
         
         const statsFiles = [
             'accident_road_condition_stats.csv',
@@ -881,11 +844,13 @@ class DatabaseAggregator {
             'road_corr.csv',
             'time_stats.csv',
             'vehicle_stats.csv',
-            'weather_daytime_stats.csv'
+            'weather_daytime_stats.csv',
+            'inferential_associations.csv',
+            'city_correlations.csv'
         ];
 
         for (const filename of statsFiles) {
-            const filePath = path.join(CSV_DIR, filename);
+            const filePath = path.join(this.csvDir, filename);
             if (!fs.existsSync(filePath)) {
                 log(`Stats file not found: ${filename}`);
                 continue;
@@ -895,18 +860,25 @@ class DatabaseAggregator {
                 const data = await readCSV(filePath);
                 await this.processStatsFile(filename, data);
             } catch (error) {
-                console.error(`Error processing stats file ${filename}:`, error);
+                throw new Error(`Statistics import failed: ${filename}`, { cause: error });
             }
         }
     }
 
     async processStatsFile(filename, data) {
         log(`Processing stats file: ${filename}`);
+        if (this.releaseManifest) {
+            const release = this.releaseManifest.dataset_release_id;
+            await this.db.query('DELETE FROM dataset_statistics WHERE dataset_release_id = $1 AND file_name = $2', [release, filename]);
+            for (let index = 0; index < data.length; index++) {
+                await this.db.query('INSERT INTO dataset_statistics(dataset_release_id, file_name, row_number, payload) VALUES ($1, $2, $3, $4::jsonb)', [release, filename, index + 1, JSON.stringify(data[index])]);
+            }
+        }
 
         // Idempotency: facts have no unique constraint, so re-running the aggregator
         // would duplicate every row. Replace this file's facts wholesale (scoped by
         // data_source) before inserting the fresh ones.
-        await pool.query('DELETE FROM analytics_facts WHERE data_source = $1', [filename]);
+        await this.db.query('DELETE FROM analytics_facts WHERE data_source = $1', [filename]);
 
         for (const row of data) {
             try {
@@ -922,7 +894,7 @@ class DatabaseAggregator {
                     const dimensionId = await this.getOrCreateDimension(factConfig.dimensionType, factConfig.dimensionValue);
                     
                     // Insert fact
-                    await pool.query(`
+                    await this.db.query(`
                         INSERT INTO analytics_facts (
                             fact_type, metric_name, dimension_id, value_numeric, 
                             value_percentage, correlation_coefficient, sample_size, data_source
@@ -939,7 +911,7 @@ class DatabaseAggregator {
                     ]);
                 }
             } catch (error) {
-                console.error(`Error processing row in ${filename}:`, error, row);
+                throw new Error(`Statistics row import failed: ${filename}`, { cause: error });
             }
         }
     }
@@ -1091,7 +1063,7 @@ class DatabaseAggregator {
     async getOrCreateDimension(dimensionType, dimensionValue) {
         try {
             // Try to get existing dimension
-            const existing = await pool.query(
+            const existing = await this.db.query(
                 'SELECT id FROM analytics_dimensions WHERE dimension_type = $1 AND dimension_value = $2',
                 [dimensionType, dimensionValue]
             );
@@ -1101,7 +1073,7 @@ class DatabaseAggregator {
             }
 
             // Create new dimension
-            const result = await pool.query(`
+            const result = await this.db.query(`
                 INSERT INTO analytics_dimensions (dimension_type, dimension_value, description)
                 VALUES ($1, $2, $3)
                 ON CONFLICT (dimension_type, dimension_value)
@@ -1111,8 +1083,7 @@ class DatabaseAggregator {
 
             return result.rows[0].id;
         } catch (error) {
-            console.error(`Error creating dimension ${dimensionType}:${dimensionValue}:`, error);
-            return null;
+            throw new Error(`Dimension import failed: ${dimensionType}:${dimensionValue}`, { cause: error });
         }
     }
 
@@ -1120,7 +1091,7 @@ class DatabaseAggregator {
         log('Generating summary statistics...');
         
         try {
-            const summary = await pool.query(`
+            const summary = await this.db.query(`
                 SELECT 
                     (SELECT COUNT(*) FROM cities) as total_cities,
                     (SELECT COUNT(*) FROM videos) as total_videos,
@@ -1141,70 +1112,40 @@ class DatabaseAggregator {
             console.log(`Latest Import: ${summary.rows[0].latest_import_date || 'N/A'}`);
             console.log('===========================\n');
         } catch (error) {
-            console.error('Error generating summary:', error);
+            throw error;
         }
     }
 
     async close() {
+        if (this.db === pool) await pool.end();
+    }
+}
+
+// Full releases inject one dedicated client into every publishing step.
+async function main() {
+    const client = await pool.connect();
+    const aggregator = new DatabaseAggregator({ db: client });
+    try {
+        await client.query('BEGIN');
+        await assertStandaloneImportAllowed(client);
+        await aggregator.initialize();
+        await aggregator.aggregateCoreData();
+        await aggregator.aggregateAnalytics();
+        await client.query('SELECT refresh_materialized_views()');
+        await aggregator.generateSummary();
+        await client.query('COMMIT');
+        console.log('Data aggregation completed successfully.');
+    } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+    } finally {
+        client.release();
         await pool.end();
     }
 }
-
-// Main execution
-async function main() {
-    console.log('Starting CSV data aggregation...');
-    
-    const aggregator = new DatabaseAggregator();
-    
-    try {
-        await aggregator.initialize();
-        
-        // Aggregate data
-        await aggregator.aggregateCoreData();
-        await aggregator.aggregateAnalytics();
-        
-        // Update missing city data using GeoNames API
-        console.log('\n🌍 Updating missing city data with GeoNames API...');
-        const geoNamesAPI = new GeoNamesAPI();
-        try {
-            await geoNamesAPI.processCities();
-        } catch (error) {
-            console.error('GeoNames API update failed:', error.message);
-            console.log('Continuing with aggregation...');
-        } finally {
-            await geoNamesAPI.close();
-        }
-        
-        // Refresh the materialized views so the API serves the just-imported data.
-        // /api/data and /api/cities read mv_city_summary (a snapshot, not the live view),
-        // so skipping this would leave the app serving pre-import data even though the
-        // base tables changed. db:publish refreshes again later (after insights), which
-        // is cheap and harmless.
-        console.log('\n🔄 Refreshing materialized views...');
-        try {
-            await pool.query('SELECT refresh_materialized_views()');
-            console.log('✅ Materialized views refreshed');
-        } catch (error) {
-            console.error('❌ Materialized view refresh failed:', error.message);
-            console.error('   Run `npm run refresh-views` manually — the API serves stale data until then.');
-        }
-
-        // Generate summary
-        await aggregator.generateSummary();
-
-        console.log('Data aggregation completed successfully!');
-
-    } catch (error) {
-        console.error('Aggregation failed:', error);
-        process.exit(1);
-    } finally {
-        await aggregator.close();
-    }
-}
-
-// Run if called directly
 if (require.main === module) {
-    main().catch(console.error);
+    main().catch(error => { console.error('Aggregation failed:', error); process.exitCode = 1; });
 }
-
 module.exports = DatabaseAggregator;
+module.exports.readCSV = readCSV;
+module.exports.safeBoolean = safeBoolean;
