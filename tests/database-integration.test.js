@@ -173,6 +173,67 @@ test('actual cohort SQL respects release, denominators, filters and identity', {
   });
 });
 
+test('actual status SQL distinguishes an unactivated audit archive from the active release', { timeout: 90000 }, async t => {
+  const db = await database(t);
+  const filename = path.join(ROOT, 'src/app/api/status/route.ts');
+  const compiled = { exports: {} };
+  const source = ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  vm.runInNewContext(source, { module: compiled, exports: compiled.exports, console,
+    require: name => {
+      if (name === 'next/server') return { NextResponse: { json: (body, options) => ({ body, options }) } };
+      if (name === '@/lib/database') return { pool: db };
+      throw new Error(name);
+    } }, { filename });
+  const status = async () => {
+    const response = await compiled.exports.GET();
+    assert.equal(response.body.success, true);
+    return response.body.data;
+  };
+  const empty = await status();
+  assert.equal(empty.coverageScope, 'audit_archive');
+  assert.equal(empty.releaseStatus, 'awaiting_validated_release');
+  assert.equal(empty.totalVideos, 0);
+  const city = (await db.query("INSERT INTO cities(city,country) VALUES('Archive fixture','Synthetic') RETURNING id")).rows[0].id;
+  const legacy = (await db.query("INSERT INTO videos(city_id,link,video_name,analysis_status) VALUES($1,'legacyvideo','legacyvideo','legacy_unverified') RETURNING id", [city])).rows[0].id;
+  await pedestrian(db, legacy, 1, { risky_crossing: true });
+  await pedestrian(db, legacy, 2, { risky_crossing: false });
+  const archive = await status();
+  assert.equal(archive.datasetReleaseIds.length, 0);
+  assert.equal(archive.coverageScope, 'audit_archive');
+  assert.equal(archive.releaseStatus, 'awaiting_validated_release');
+  assert.equal(archive.totalVideos, 1);
+  assert.equal(archive.totalCities, 1);
+  assert.equal(archive.totalPedestrians, 2);
+  assert.equal(archive.eligibleVideos, 0);
+  assert.equal(archive.eligibleCities, 0);
+  assert.equal(archive.eligiblePedestrians, 0);
+  assert.equal(archive.intervalStatus, 'unavailable_no_active_release');
+  await register(db, 'inactive-release', false);
+  const inactive = await seedVideo(db, city, 'inactivevid', {}, { release: 'inactive-release' });
+  await pedestrian(db, inactive, 1, { risky_crossing: true });
+  const unactivated = await status();
+  assert.equal(unactivated.totalVideos, 2);
+  assert.equal(unactivated.totalPedestrians, 3);
+  assert.equal(unactivated.eligibleVideos, 0, 'stored eligibility cannot activate an unpublished dataset');
+  assert.equal(unactivated.eligiblePedestrians, 0);
+  await register(db, 'active-release', true);
+  const active = await seedVideo(db, city, 'activevideo', {});
+  await pedestrian(db, active, 1, { risky_crossing: false });
+  const current = await status();
+  assert.equal(current.coverageScope, 'active_release');
+  assert.equal(current.releaseStatus, 'active');
+  assert.equal(current.datasetReleaseIds.join(','), 'active-release');
+  assert.equal(current.totalVideos, 1, 'active release counts exclude archived and inactive videos');
+  assert.equal(current.totalCities, 1);
+  assert.equal(current.totalPedestrians, 1);
+  assert.equal(current.eligibleVideos, 1);
+  assert.equal(current.eligibleCities, 1);
+  assert.equal(current.eligiblePedestrians, 1);
+  assert.equal(current.intervalStatus, 'unavailable_for_release');
+});
+
 test('actual timeline SQL excludes unsourced recording dates and missing analysis dates', { timeout: 90000 }, async t => {
   const db = await database(t);
   await register(db, 'active-release', true);
