@@ -285,8 +285,7 @@ const METRIC_CONFIG: Record<string, MetricConfig> = {
       min: [0, 1, 0, 0.6], // Green for narrow (safer)
       max: [1, 0, 0, 0.8], // Red for wide (more dangerous)
     },
-    // No n gate: 592 of 603 cities have exactly one video, so any video-count threshold
-    // would leave a handful of cities. The limitation is provenance, not sample size.
+    sample: { property: 'road_width_sample', minN: 30, noun: 'pedestrians with a measured road width' },
     caveat: 'One camera view per city in 592 of 603 cities',
   },
   traffic_mortality: {
@@ -1185,7 +1184,7 @@ export default function Globe() {
               ? `${video.localization_candidates.length} candidate locations considered`
               : null,
             video.risky_crossing_ratio != null
-              ? `Risky crossing: ${(video.risky_crossing_ratio * 100).toFixed(0)}%`
+              ? `Risky crossing: ${(video.risky_crossing_ratio * 100).toFixed(0)}% (n=${video.risky_crossing_determined} known observations in this cohort)`
               : null,
             'Click to open video',
           ].filter(Boolean).join('\n'),
