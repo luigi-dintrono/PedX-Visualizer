@@ -171,6 +171,7 @@ export function buildCohortQuery(search: URLSearchParams) {
         AVG(p.crossing_speed_mps) FILTER (WHERE ${gate('measured_crossing_speed')} AND p.crossing_speed_mps BETWEEN 0.1 AND 4) AS cohort_crossing_speed,
         COUNT(p.crossing_speed_mps) FILTER (WHERE ${gate('measured_crossing_speed')} AND p.crossing_speed_mps BETWEEN 0.1 AND 4)::int AS cohort_crossing_sample,
         AVG(p.avg_road_width) FILTER (WHERE ${gate('road_width')}) AS cohort_road_width,
+        COUNT(p.avg_road_width) FILTER (WHERE ${gate('road_width')})::int AS cohort_road_width_sample,
         ARRAY_AGG(DISTINCT v.dataset_release_id) FILTER (WHERE v.dataset_release_id IS NOT NULL) AS dataset_release_ids
       FROM eligible_videos v LEFT JOIN population p ON p.video_id = v.id GROUP BY v.city_id
       ${hasPedestrianFilters || vehicleHaving.length ? `HAVING COUNT(p.id) > 0 ${vehicleHaving.map(condition => `AND ${condition}`).join(' ')}` : ''}
@@ -183,7 +184,7 @@ export function buildCohortQuery(search: URLSearchParams) {
       o.cohort_age AS avg_pedestrian_age, o.cohort_age_sample AS age_sample,
       o.cohort_walking_speed AS avg_measured_walking_speed, o.cohort_walking_sample AS measured_walking_ped_sample,
       o.cohort_crossing_speed AS avg_measured_crossing_speed, o.cohort_crossing_sample AS measured_crossing_sample,
-      o.cohort_road_width AS avg_road_width,
+      o.cohort_road_width AS avg_road_width, o.cohort_road_width_sample AS road_width_sample,
       o.cohort_pedestrian_count::float / NULLIF(o.cohort_video_count, 0) AS avg_pedestrians_per_video,
       ${Object.values(METRICS).filter(definition => definition.flag).flatMap(definition => [`o.${definition.property}`, `o.${definition.sample}`]).join(', ')},
       o.dataset_release_ids, o.dense_videos, o.legacy_videos, o.unversioned_videos,

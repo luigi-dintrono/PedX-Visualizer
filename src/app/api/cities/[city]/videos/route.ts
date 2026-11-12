@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { pool } from '@/lib/database';
 import { resolveCityId, AmbiguousCityError } from '@/lib/city-identity';
 import { buildCohortQuery } from '@/lib/cohort';
+import { METRICS } from '@/lib/metrics';
 
 export async function GET(
   request: NextRequest,
@@ -16,6 +17,17 @@ export async function GET(
     const cohort = buildCohortQuery(search);
     const limitRaw = parseInt(request.nextUrl.searchParams.get('limit') || '5', 10);
     const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 500) : 5;
+    // Stored video summaries describe the entire clip, and may use invalid measures.
+    // Derive marker rates from the same filtered, known observations as the city cards.
+    const rateColumns = Object.entries(METRICS).filter(([, definition]) => definition.flag).flatMap(([metric, definition]) => {
+      const keys = [...new Set([definition.validityKey, metric, definition.property].filter(Boolean))];
+      const allowed = `COALESCE(${keys.map(key => `v.metric_validity->'${key}'->>'status'`).join(', ')}, 'unknown') = ANY($1::text[])`;
+      const known = `COUNT(p.${definition.flag}) FILTER (WHERE ${allowed})`;
+      const positive = `COUNT(*) FILTER (WHERE p.${definition.flag} IS TRUE AND ${allowed})`;
+      const column = ({ risky_crossing: 'risky_crossing_ratio', run_red_light: 'run_red_light_ratio', crosswalk_usage: 'crosswalk_usage_ratio', phone_usage: 'phone_usage_ratio' } as Record<string, string>)[metric];
+      return [`${known}::int AS ${definition.sample}`,
+        `CASE WHEN ${known} >= ${definition.minN} THEN ${positive}::float / NULLIF(${known}, 0) END AS ${column}`];
+    });
 
     const query = `${cohort.ctes}
       SELECT 
@@ -34,10 +46,7 @@ export async function GET(
         v.localization_route,
         v.localization_route_length_m,
         v.localization_trajectory_source,
-        v.risky_crossing_ratio,
-        v.run_red_light_ratio,
-        v.crosswalk_usage_ratio,
-        v.phone_usage_ratio,
+        rates.*,
         v.discovery_run_id, v.sampling_strategy, v.search_order,
         v.main_weather, v.dataset_release_id, v.analysis_status, v.eligibility_status,
         v.metric_validity, v.searched_city_id, v.verified_city_id, v.recorded_at, v.analyzed_at,
@@ -48,6 +57,7 @@ export async function GET(
       FROM eligible_videos v
       JOIN cities c ON v.city_id = c.id
       JOIN observations o ON o.city_id = v.city_id
+      LEFT JOIN LATERAL (SELECT ${rateColumns.join(', ')} FROM population p WHERE p.video_id = v.id) rates ON TRUE
       WHERE ${cohort.hasPedestrianFilters ? 'EXISTS (SELECT 1 FROM population matching WHERE matching.video_id = v.id)' : 'TRUE'}
       ORDER BY v.created_at DESC
       LIMIT ${limit}

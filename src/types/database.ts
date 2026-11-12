@@ -152,6 +152,10 @@ export interface CityVideo {
   run_red_light_ratio: number | null;
   crosswalk_usage_ratio: number | null;
   phone_usage_ratio: number | null;
+  risky_crossing_determined?: number;
+  run_red_light_sample?: number;
+  crosswalk_usage_sample?: number;
+  phone_usage_sample?: number;
   main_weather: string | null;
   city: string;
   country: string;
@@ -209,6 +213,7 @@ export interface CityGlobeData {
   avg_hesitation_rate_dense?: number | string | null;
   avg_crossing_time?: number | string | null;
   avg_road_width?: number | string | null;
+  road_width_sample?: number | string | null;
   traffic_mortality?: number | string | null;
   // Model-based uncertainty for the four per-pedestrian rates (v_city_rate_estimates,
   // scripts/estimate_city_rates.py): <m>_est/_lo/_hi = posterior mean + 95% interval of the

@@ -28,13 +28,33 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const sourceAllowed = (keys: string[]) => keys.every(key => expected.includes(registry[key]?.status || 'unknown'));
     if (!sourceAllowed([definition.validityKey || metric])) return empty('This metric does not meet the selected release validity policy.');
     const relationships = rows.rows.flatMap(row => {
-      const required: Record<string, string[]> = { 'age_stats.csv': ['age'], 'gender_stats.csv': ['gender'], 'weather_daytime_stats.csv': ['weather', 'daytime'] };
-      const keys = required[row.file_name] || [];
+      // An allowed outcome cannot make an invalid subgroup classifier usable.
+      // Keep an explicit source contract so new/unknown artifact types fail closed.
+      const clothing: Record<string, string[]> = {
+        shirt: ['short_sleeved_shirt', 'long_sleeved_shirt'], outerwear: ['short_sleeved_outwear', 'long_sleeved_outwear'],
+        dress: ['short_sleeved_dress', 'long_sleeved_dress'], vest: ['vest'], sling: ['sling'],
+        shorts: ['shorts'], trousers: ['trousers'], skirt: ['skirt'],
+      };
+      const environment: Record<string, string[]> = {
+        police_car: ['accident', 'police_car'], arrow_board: ['accident', 'arrow_board'],
+        cones: ['accident', 'cones'], accident: ['accident'], crack: ['road_condition', 'crack'], potholes: ['road_condition', 'potholes'],
+      };
+      const required: Record<string, string[] | undefined> = {
+        'age_stats.csv': ['age'], 'gender_stats.csv': ['gender'],
+        'weather_daytime_stats.csv': ['weather', 'daytime'],
+        'phone_stats.csv': ['phone_using'], 'carried_items_stats.csv': ['belongings', row.payload.accessory],
+        'clothing_stats.csv': clothing[row.payload.clothing_type] ? ['clothing', ...clothing[row.payload.clothing_type]] : undefined,
+        'vehicle_stats.csv': ['vehicle_type', row.payload.vehicle_type],
+        'accident_road_condition_stats.csv': environment[row.payload.environment_factor],
+        'continent_stats.csv': [], 'crosswalk_coeff.csv': ['crosswalk_prob'],
+      };
+      const families: Record<string, string[]> = {
+        gender: ['gender'], age_band: ['age'], phone: ['phone_using'],
+        crowd: ['nearby_count_beginning'], daytime: ['daytime'], weather: ['weather'], traffic: ['avg_vehicle_total'],
+      };
+      const keys = row.file_name === 'inferential_associations.csv' ? families[row.payload.family] : required[row.file_name];
+      if (!keys || keys.some(key => !key)) return [];
       if (!sourceAllowed(keys)) return [];
-      if (row.file_name === 'inferential_associations.csv') {
-        if (row.payload.family === 'gender' && !sourceAllowed(['gender'])) return [];
-        if (row.payload.family === 'age_band' && !sourceAllowed(['age'])) return [];
-      }
       const evidence = relationshipEvidence(row.file_name, row.payload, metric);
       return evidence ? [{ ...evidence, source: row.file_name, datasetReleaseId: active.dataset_release_id }] : [];
     });
