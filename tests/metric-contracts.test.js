@@ -195,3 +195,43 @@ test('relationship evidence rejects invalid subgroup sources and unknown artifac
   assert.equal(response.body.data.relationships[0].source, 'continent_stats.csv');
   assert.equal(response.body.data.relationships[0].value, '25.0%');
 });
+
+test('relationship component policies inherit detector families without overriding explicit invalidity', async () => {
+  const rate = { 'risky_crossing_rate(%)': '25', 'risky_crossing_rate(%)_n': '100', 'risky_crossing_rate(%)_n_clusters': '8', 'risky_crossing_rate(%)_ci_low': '10', 'risky_crossing_rate(%)_ci_high': '40' };
+  const groups = [['clothing_stats.csv', 'clothing_type', 'vest'], ['carried_items_stats.csv', 'accessory', 'backpack'],
+    ['vehicle_stats.csv', 'vehicle_type', 'bus'], ['vehicle_stats.csv', 'vehicle_type', 'three wheelers'],
+    ['accident_road_condition_stats.csv', 'environment_factor', 'cones'], ['accident_road_condition_stats.csv', 'environment_factor', 'crack'],
+    ['carried_items_stats.csv', 'accessory', 'unregistered'], ['vehicle_stats.csv', 'vehicle_type', 'unregistered']];
+  const familyNames = ['clothing', 'belongings', 'vehicle_type', 'accident', 'road_condition'];
+  const components = ['vest', 'backpack', 'bus', 'auto rickshaw', 'rickshaw', 'three wheelers -CNG-', 'cones', 'crack'];
+  let registry;
+  let experimental = false;
+  const pool = { query: async sql => ({ rows: sql.includes('FROM dataset_releases') ? [{ dataset_release_id: 'active', manifest: {
+    statistics_population: { eligible_only: true, invalid_excluded: true, metric_specific_denominators: true,
+      allowed_metric_statuses: experimental ? ['validated', 'experimental', 'unknown'] : ['validated'] },
+  } }] : [{ file_name: 'metrics_registry.json', payload: { default_statuses: registry } },
+    ...groups.map(([file_name, key, factor]) => ({ file_name, payload: { ...rate, [key]: factor } }))] }) };
+  const api = loadTs('src/app/api/metrics/[metric]/relationships/route.ts', {
+    'next/server': { NextResponse: { json: body => ({ body }) } }, '@/lib/database': { pool }, '@/lib/metrics': metrics,
+    '../../../../../../scripts/lib/relationship-evidence': { relationshipEvidence },
+  });
+  const query = async () => {
+    const response = await api.GET({ url: `http://localhost/api/metrics/risky_crossing/relationships${experimental ? '?includeExperimental=true' : ''}` }, { params: Promise.resolve({ metric: 'risky_crossing' }) });
+    assert.equal(response.body.success, true);
+    return response.body.data.relationships;
+  };
+  registry = { risky_crossing: { status: 'validated' }, ...Object.fromEntries(familyNames.map(key => [key, { status: 'validated' }])) };
+  assert.equal((await query()).length, 6, 'absent components inherit validated family policies');
+  registry.rickshaw = { status: 'invalid' };
+  assert.equal((await query()).length, 5, 'the three-wheelers union needs each source component to be allowed');
+  registry.vest = { status: 'unknown' };
+  assert.equal((await query()).length, 4, 'an explicit unknown component is not replaced by its validated family');
+  registry = { risky_crossing: { status: 'validated' }, ...Object.fromEntries(components.map(key => [key, { status: 'validated' }])) };
+  assert.equal((await query()).length, 6, 'explicit validated components work when no family policy was provided');
+  for (const key of familyNames) registry[key] = { status: 'invalid' };
+  assert.equal((await query()).length, 0, 'components cannot override invalid families');
+  experimental = true;
+  assert.equal((await query()).length, 0, 'experimental opt-in cannot override invalid families');
+  registry = { risky_crossing: { status: 'validated' }, ...Object.fromEntries(familyNames.map(key => [key, { status: 'experimental' }])) };
+  assert.equal((await query()).length, 6, 'current experimental detector families also supply absent components');
+});
