@@ -67,6 +67,69 @@ async function pedestrian(db, videoId, id, values) {
   await db.query(`INSERT INTO pedestrians(${columns.join(',')}) VALUES(${columns.map((_, index) => `$${index + 1}`).join(',')})`, Object.values(row));
 }
 
+function routeModule(relative, dependencies) {
+  const filename = path.join(ROOT, relative);
+  const compiled = { exports: {} };
+  const source = ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  vm.runInNewContext(source, { module: compiled, exports: compiled.exports, URL, URLSearchParams, console,
+    require: name => {
+      if (Object.hasOwn(dependencies, name)) return dependencies[name];
+      throw new Error(`Unexpected dependency: ${name}`);
+    } }, { filename });
+  return compiled.exports;
+}
+
+test('video marker rates use filtered known flags and validity; road width counts only measured values', { timeout: 90000 }, async t => {
+  const db = await database(t);
+  await register(db, 'active-release', true);
+  const city = (await db.query("INSERT INTO cities(city,country) VALUES('Marker fixture','Synthetic') RETURNING id")).rows[0].id;
+  const validity = { risky_crossing: { status: 'validated' }, daytime: { status: 'validated' }, avg_road_width: { status: 'validated' } };
+  const good = await seedVideo(db, city, 'marker_good', validity);
+  const invalid = await seedVideo(db, city, 'marker_bad_', { ...validity, risky_crossing: { status: 'invalid' }, avg_road_width: { status: 'invalid' } });
+  const experimental = await seedVideo(db, city, 'marker_exp_', { ...validity, risky_crossing: { status: 'experimental' } });
+  const small = await seedVideo(db, city, 'marker_tiny', validity);
+  await db.query('UPDATE videos SET risky_crossing_ratio=0.99');
+  for (let index = 0; index < 40; index++) {
+    await pedestrian(db, good, index, { risky_crossing: index < 30, daytime: index >= 30, avg_road_width: index === 0 ? 8 : null });
+    await pedestrian(db, invalid, index, { risky_crossing: true, daytime: false, avg_road_width: 99 });
+    await pedestrian(db, experimental, index, { risky_crossing: false, daytime: false });
+  }
+  await pedestrian(db, small, 0, { risky_crossing: true, daytime: false });
+  const widths = (await cohortModule(db).getCohortCities(new URLSearchParams())).rows[0];
+  assert.equal(Number(widths.total_pedestrians), 121);
+  assert.equal(Number(widths.avg_road_width), 8);
+  assert.equal(widths.road_width_sample, 1, 'null and invalid width readings cannot inflate support');
+  assert.equal(metrics.comparableValue(widths, 'road_width'), null);
+
+  const api = routeModule('src/app/api/cities/[city]/videos/route.ts', {
+    'next/server': { NextResponse: { json: (body, options) => ({ body, options }) } },
+    '@/lib/database': { pool: db }, '@/lib/metrics': metrics, '@/lib/cohort': cohortModule(db),
+    '@/lib/city-identity': { resolveCityId: async () => city, AmbiguousCityError: class extends Error {} },
+  });
+  const query = async search => {
+    const url = new URL(`http://localhost/api/cities/${city}/videos?limit=100&${search}`);
+    const response = await api.GET({ url: url.href, nextUrl: url }, { params: Promise.resolve({ city: String(city) }) });
+    assert.equal(response.body.success, true);
+    return response.body.data;
+  };
+  const unfiltered = await query('');
+  const byId = id => unfiltered.find(row => row.id === id);
+  assert.equal(byId(good).risky_crossing_ratio, 0.75, 'stored 99% is not the pooled known-flag rate');
+  assert.equal(byId(good).risky_crossing_determined, 40);
+  assert.equal(byId(invalid).risky_crossing_ratio, null, 'invalid rates stay hidden even without a selected metric');
+  assert.equal(byId(invalid).risky_crossing_determined, 0);
+  assert.equal(byId(experimental).risky_crossing_ratio, null);
+  assert.equal(byId(small).risky_crossing_ratio, null, 'a one-person clip is below the shared display gate');
+  const filtered = await query('daytime=false');
+  assert.equal(filtered.find(row => row.id === good).risky_crossing_ratio, 1);
+  assert.equal(filtered.find(row => row.id === good).risky_crossing_determined, 30);
+  const optedIn = await query('includeExperimental=true');
+  assert.equal(optedIn.find(row => row.id === experimental).risky_crossing_ratio, 0, 'valid experimental zeros survive');
+  assert.equal(optedIn.find(row => row.id === invalid).risky_crossing_ratio, null, 'opt-in cannot admit invalid rates');
+});
+
 test('actual cohort SQL respects release, denominators, filters and identity', { timeout: 90000 }, async t => {
   const db = await database(t);
   await register(db, 'old-release', false);

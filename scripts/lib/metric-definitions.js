@@ -13,7 +13,7 @@ const METRICS = {
   social_groups: { name: 'Pedestrians walking in groups', property: 'grouped_pedestrian_share_dense', sample: 'social_dense_pedestrians', minN: 30, unit: '%', validityKey: 'grouped_pedestrians' },
   avg_age: { name: 'Estimated age', property: 'avg_pedestrian_age', sample: 'age_sample', minN: 30, unit: 'years', validityKey: 'age' },
   pedestrian_density: { name: 'Tracked pedestrians per video', property: 'avg_pedestrians_per_video', sample: 'total_pedestrians', minN: 30, unit: 'peds/video', validityKey: 'total_pedestrians' },
-  road_width: { name: 'Estimated road width', property: 'avg_road_width', sample: 'total_pedestrians', minN: 30, unit: 'm', validityKey: 'avg_road_width' },
+  road_width: { name: 'Estimated road width', property: 'avg_road_width', sample: 'road_width_sample', minN: 30, unit: 'm', validityKey: 'avg_road_width' },
   crossing_speed: { name: 'Reference crossing speed', property: 'avg_crossing_speed', minN: 0, unit: 'm/s', referenceOnly: true },
   crossing_time: { name: 'Reference crossing time', property: 'avg_crossing_time', minN: 0, unit: 's', referenceOnly: true },
 };
